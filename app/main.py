@@ -8,7 +8,10 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import (
@@ -67,17 +70,61 @@ async def health() -> Dict[str, Any]:
     return {"ok": True}
 
 
-@app.get("/api/status")
-async def status() -> Dict[str, Any]:
+def _cookie_domains(path: Path) -> List[str]:
+    """Unique, sorted domains referenced by a Netscape-format cookie file.
+
+    Tolerates the "#HttpOnly_" prefix some exporters (e.g. browser extensions)
+    use for HttpOnly cookies -- those lines are real cookie rows, not comments.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    domains = set()
+    for raw_line in text.splitlines():
+        line = raw_line.strip("\n")
+        if line.startswith("#HttpOnly_"):
+            line = line[len("#HttpOnly_"):]
+        elif line.startswith("#") or not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) != 7:
+            continue
+        domain = parts[0].strip().lstrip(".")
+        if domain:
+            domains.add(domain)
+    return sorted(domains)
+
+
+def status_payload() -> Dict[str, Any]:
+    """Single source of truth for GET /api/status and the WS snapshot."""
+    cookies_file = config.COOKIES_FILE
+    detected = cookies_file.is_file()
+    domains: List[str] = []
+    updated_at: Optional[str] = None
+    if detected:
+        domains = _cookie_domains(cookies_file)
+        try:
+            mtime = cookies_file.stat().st_mtime
+            updated_at = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+        except OSError:
+            updated_at = None
     return {
         "ytdlp_version": ytdl.ytdlp_version(),
-        "cookies_detected": config.cookies_detected(),
+        "cookies_detected": detected,
+        "cookies_domains": domains,
+        "cookies_updated_at": updated_at,
         "max_concurrent": config.MAX_CONCURRENT,
         "downloads_root": str(config.DOWNLOADS_ROOT),
         "config_dir": str(config.CONFIG_DIR),
         "resume_on_start": config.RESUME_ON_START,
         "presets": ytdl.PRESET_NAMES,
     }
+
+
+@app.get("/api/status")
+async def status() -> Dict[str, Any]:
+    return status_payload()
 
 
 @app.get("/api/presets")
@@ -338,6 +385,110 @@ async def update_ytdlp() -> Dict[str, Any]:
 
 
 # --------------------------------------------------------------------------
+# Cookies (upload / delete -- never served back)
+# --------------------------------------------------------------------------
+
+COOKIES_MAX_SIZE = 2 * 1024 * 1024  # 2 MB
+
+
+def _is_valid_cookiefile(text: str) -> bool:
+    """Netscape header on the first non-empty line, or any 7-field cookie row."""
+    lines = text.splitlines()
+    first_non_empty = next((ln for ln in lines if ln.strip()), "")
+    if first_non_empty.startswith("# Netscape HTTP Cookie File") or first_non_empty.startswith(
+        "# HTTP Cookie File"
+    ):
+        return True
+    for raw_line in lines:
+        line = raw_line
+        if line.startswith("#HttpOnly_"):
+            line = line[len("#HttpOnly_"):]
+        elif line.startswith("#") or not line.strip():
+            continue
+        if len(line.split("\t")) == 7:
+            return True
+    return False
+
+
+def _write_cookies_atomic(text: str) -> None:
+    """tmp file in the same directory + os.replace, so a crash mid-write never
+    leaves a partial cookies.txt in place."""
+    path = config.COOKIES_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".cookies-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp_name, path)
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
+    try:
+        os.chmod(path, 0o600)  # best-effort; no-op semantics on Windows
+    except OSError:
+        pass
+
+
+async def _broadcast_status() -> None:
+    """Push a fresh status snapshot to every connected WS client.
+
+    Mirrors ``worker._broadcast`` (the single fan-out writer for job/log
+    events) without importing anything private from it.
+    """
+    if not worker.clients:
+        return
+    message = json.dumps({"type": "status", **status_payload()}, default=str)
+    dead = []
+    for ws in list(worker.clients):
+        try:
+            await ws.send_text(message)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        worker.clients.discard(ws)
+
+
+@app.post("/api/cookies")
+async def upload_cookies(file: UploadFile = File(...)) -> Dict[str, Any]:
+    raw = await file.read()
+    if len(raw) > COOKIES_MAX_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large (max {COOKIES_MAX_SIZE // (1024 * 1024)} MB)",
+        )
+    text = raw.decode("utf-8", errors="replace")
+    if not _is_valid_cookiefile(text):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Not a recognized cookies.txt file -- expected a Netscape HTTP "
+                "Cookie File header or at least one tab-separated cookie row."
+            ),
+        )
+    await asyncio.to_thread(_write_cookies_atomic, text)
+
+    payload = status_payload()
+    await _broadcast_status()
+    return {
+        "cookies_detected": True,
+        "domains": payload["cookies_domains"],
+        "count": len(payload["cookies_domains"]),
+        "updated_at": payload["cookies_updated_at"],
+    }
+
+
+@app.delete("/api/cookies")
+async def delete_cookies() -> Dict[str, Any]:
+    try:
+        config.COOKIES_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+    await _broadcast_status()
+    return {"cookies_detected": False}
+
+
+# --------------------------------------------------------------------------
 # WebSocket (registered before the static mount so StaticFiles cannot claim it)
 # --------------------------------------------------------------------------
 
@@ -354,12 +505,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     "type": "snapshot",
                     "jobs": jobs,
                     "logs": list(worker.log_ring)[-200:],
-                    "status": {
-                        "ytdlp_version": ytdl.ytdlp_version(),
-                        "cookies_detected": config.cookies_detected(),
-                        "max_concurrent": config.MAX_CONCURRENT,
-                        "downloads_root": str(config.DOWNLOADS_ROOT),
-                    },
+                    "status": status_payload(),
                 },
                 default=str,
             )
@@ -380,6 +526,10 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 
 # --------------------------------------------------------------------------
 # Static UI (mounted LAST so /api and /ws win; tolerates a missing static/)
+#
+# This mount only ever serves config.STATIC_DIR (static/, next to app/); it
+# has no visibility into config.CONFIG_DIR, so nothing here can ever serve
+# /config or cookies.txt. There is no other catch-all route in this app.
 # --------------------------------------------------------------------------
 
 if os.path.isdir(config.STATIC_DIR):

@@ -35,7 +35,8 @@ RUN chmod +x /entrypoint.sh
 # --- Runtime configuration ---------------------------------------------
 # PUID/PGID/UMASK follow the LinuxServer.io convention used across Unraid.
 # Defaults (99/100) match Unraid's built-in "nobody"/"users" account.
-ENV DOWNLOADS_ROOT=/downloads \
+ENV PYTHONPATH=/app \
+    DOWNLOADS_ROOT=/downloads \
     CONFIG_DIR=/config \
     PORT=8080 \
     MAX_CONCURRENT=2 \

@@ -802,6 +802,14 @@ window.__YTDLP_APP_LOADED = true;
 
   // ────────────────────────────── settings ──────────────────────────────
 
+  /** created_at-style ISO string -> a short, locale-formatted date/time. */
+  function fmtDate(iso) {
+    if (!iso) return '';
+    const t = Date.parse(iso);
+    if (isNaN(t)) return String(iso);
+    try { return new Date(t).toLocaleString(); } catch (e) { return String(iso); }
+  }
+
   /** Paint the header pills and the Settings tab from a status payload. */
   function applyStatus(s) {
     if (!s) return;
@@ -812,8 +820,18 @@ window.__YTDLP_APP_LOADED = true;
     setText(els.stRoot, s.downloads_root || '—');
 
     setText(els.versionPill, 'yt-dlp ' + (s.ytdlp_version || '—'));
+    const domains = Array.isArray(s.cookies_domains) ? s.cookies_domains : [];
     els.cookiesPill.className = 'pill ' + (s.cookies_detected ? 'ok' : 'off');
     setText(els.cookiesPill, s.cookies_detected ? 'cookies ✓' : 'no cookies');
+    els.cookiesPill.title = domains.length
+      ? 'Cookies file detection — domains: ' + domains.join(', ')
+      : 'Cookies file detection';
+
+    setText(els.ckStatus, s.cookies_detected ? 'detected' : 'not found');
+    setText(els.ckDomains, domains.length ? domains.join(', ') : '—');
+    setText(els.ckUpdated, s.cookies_detected ? (fmtDate(s.cookies_updated_at) || '—') : '—');
+    els.ckDeleteBtn.hidden = !s.cookies_detected;
+    resetDeleteConfirm();
   }
 
   async function loadStatus() {
@@ -849,6 +867,61 @@ window.__YTDLP_APP_LOADED = true;
       toast('Update failed: ' + e.message, 'error');
     } finally {
       els.updateBtn.disabled = false;
+    }
+  }
+
+  // ───────────────────────────── cookies ─────────────────────────────────
+
+  let deleteConfirmTimer = null;
+
+  /** Put the Delete button back to its normal (unconfirmed) state. */
+  function resetDeleteConfirm() {
+    clearTimeout(deleteConfirmTimer);
+    deleteConfirmTimer = null;
+    els.ckDeleteBtn.classList.remove('confirm');
+    setText(els.ckDeleteBtn, 'Delete');
+  }
+
+  async function uploadCookies() {
+    const file = els.ckFile.files && els.ckFile.files[0];
+    if (!file) { toast('Choose a cookies file first', 'error'); return; }
+
+    const fd = new FormData();
+    fd.append('file', file, file.name);
+
+    els.ckUploadBtn.disabled = true;
+    try {
+      const data = await api('/api/cookies', { method: 'POST', body: fd });
+      els.ckFile.value = '';
+      const n = Array.isArray(data.domains) ? data.domains.length : (data.count || 0);
+      toast('Cookies uploaded (' + n + (n === 1 ? ' domain' : ' domains') + ')', 'ok');
+      await loadStatus();
+    } catch (e) {
+      toast('Cookies upload failed: ' + e.message, 'error');
+    } finally {
+      els.ckUploadBtn.disabled = false;
+    }
+  }
+
+  /** First click arms a 5s "Confirm delete" state; a second click within that
+   *  window deletes. Any other interaction (or the timeout) resets it. */
+  async function onDeleteCookiesClick() {
+    if (!deleteConfirmTimer) {
+      els.ckDeleteBtn.classList.add('confirm');
+      setText(els.ckDeleteBtn, 'Confirm delete');
+      deleteConfirmTimer = setTimeout(resetDeleteConfirm, 5000);
+      return;
+    }
+    resetDeleteConfirm();
+    els.ckDeleteBtn.disabled = true;
+    try {
+      await api('/api/cookies', { method: 'DELETE' });
+      toast('Cookies deleted', 'ok');
+      await loadStatus();
+    } catch (e) {
+      toast('Delete failed: ' + e.message, 'error');
+    } finally {
+      els.ckDeleteBtn.disabled = false;
     }
   }
 
@@ -948,6 +1021,13 @@ window.__YTDLP_APP_LOADED = true;
       const line = msg.line === undefined || msg.line === null ? '' : String(msg.line);
       appendGlobalLog(msg.job_id, line);
       appendJobLog(msg.job_id, line);
+      return;
+    }
+
+    // Broadcast after a cookies upload/delete so every open tab's pill and
+    // Settings tab stay in sync without polling.
+    if (msg.type === 'status') {
+      applyStatus(msg);
     }
   }
 
@@ -1002,6 +1082,13 @@ window.__YTDLP_APP_LOADED = true;
     els.stRoot         = $('#st-root');
     els.updateBtn      = $('#update-btn');
     els.updateOutput   = $('#update-output');
+
+    els.ckStatus       = $('#ck-status');
+    els.ckDomains      = $('#ck-domains');
+    els.ckUpdated      = $('#ck-updated');
+    els.ckFile         = $('#ck-file');
+    els.ckUploadBtn    = $('#ck-upload-btn');
+    els.ckDeleteBtn    = $('#ck-delete-btn');
 
     els.folderDialog   = $('#folder-dialog');
     els.fdCrumbs       = $('#fd-crumbs');
@@ -1065,6 +1152,8 @@ window.__YTDLP_APP_LOADED = true;
 
     // settings
     els.updateBtn.addEventListener('click', updateYtdlp);
+    els.ckUploadBtn.addEventListener('click', uploadCookies);
+    els.ckDeleteBtn.addEventListener('click', onDeleteCookiesClick);
 
     // folder dialog
     els.fdClose.addEventListener('click', closeFolderPicker);

@@ -21,14 +21,30 @@ expose it directly to the internet.
   offered as a checklist before you enqueue them.
 - **Folder picker** -- browse/create subfolders inside your downloads mount;
   the app can never write outside of it.
-- **Cookies support** -- drop a `cookies.txt` into the config volume for
-  authenticated downloads.
+- **Cookies support** -- upload a cookies file from the Settings tab (or drop
+  a `cookies.txt` into the config volume) for authenticated downloads.
 - **Auto-resume** -- jobs still queued/running when the container stops are
   automatically requeued on the next start.
 - **Self-updating** -- update yt-dlp from the Settings tab, or automatically
   on every container start.
 - **Runs as non-root** -- configurable `PUID`/`PGID`/`UMASK`, matching the
   LinuxServer.io convention used throughout Unraid.
+
+## Supported sites
+
+Anything [yt-dlp itself supports](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md)
+-- YouTube, Vimeo, SoundCloud, Twitter/X, and hundreds of others -- works
+out of the box.
+
+In addition, this app ships a first-class **imaglr.com** extractor:
+
+- Single posts, user profiles, community pages ("`/p/<slug>`"), and tags.
+- **Videos only** -- image posts are enumerated but skipped, since this app
+  downloads media, not pictures.
+- Public posts, profiles, and pages work anonymously (profiles and pages fall
+  back to the site's public RSS feed when not logged in). **Tags always
+  require a cookies file**, and logged-in profiles get richer pagination via
+  imaglr's JSON API instead of RSS.
 
 ## Screenshots
 
@@ -99,6 +115,7 @@ Create a new container manually with:
 | `PUID`            | `99`         | User ID the app runs as (files are written with this owner).                |
 | `PGID`            | `100`        | Group ID the app runs as.                                                   |
 | `UMASK`           | `022`        | Umask applied to newly created files/folders.                               |
+| `IMAGLR_MAX_PAGES`| `500`        | Safety cap on pages enumerated per imaglr profile/page/tag/RSS listing.     |
 
 ## Volumes
 
@@ -107,21 +124,31 @@ Create a new container manually with:
 | `/downloads`    | Where finished downloads land. Point this at your media library/share. |
 | `/config`       | `jobs.db` (SQLite queue/history), `logs/<job_id>.log`, `archive.txt`, and optionally `cookies.txt`. Back this up if you care about queue history. |
 
-## cookies.txt
+## Cookies
 
-To download age-restricted, members-only, or account-gated content:
+To download age-restricted, members-only, or account-gated content (including
+imaglr tags and some profile content), upload a cookies file from the app
+itself:
 
-1. Export your browser's cookies for the target site in Netscape format
-   (e.g. the "Get cookies.txt LOCALLY" extension, or
-   `yt-dlp --cookies-from-browser <browser>` run locally to generate a file).
-2. Copy the resulting file to the config volume as `cookies.txt`, e.g.
-   `/mnt/user/appdata/yt-dlp-ng/cookies.txt` on Unraid, or `./config/cookies.txt`
-   with the Compose setup.
-3. Restart the container (or just wait -- it's picked up per-job). The
-   Settings tab / `GET /api/status` reports whether a cookies file was
-   detected.
+1. While logged in to the target site in your browser, export its cookies in
+   Netscape format -- e.g. with the "Get cookies.txt LOCALLY" extension, or
+   `yt-dlp --cookies-from-browser <browser>` run locally to generate a file.
+2. Open the **Settings** tab -> **Cookies** card, pick the exported `.txt`
+   file, and click **Upload**. The app validates it looks like a real cookies
+   file, stores it server-side, and immediately shows the domains it covers.
+3. It's picked up on the very next job -- no restart needed. The header pill
+   and the Settings tab show whether cookies are detected and which domains
+   they cover.
+4. To remove it, click **Delete** in the same card, then **Confirm delete**
+   within 5 seconds. Once uploaded, the file is never served back out over
+   the API -- deleting and re-uploading is the only way to change it.
 
-Treat `cookies.txt` as a credential -- don't commit it or share it.
+**Manual alternative:** you can still drop the file directly onto the config
+volume as `cookies.txt` (e.g. `/mnt/user/appdata/yt-dlp-ng/cookies.txt` on
+Unraid, or `./config/cookies.txt` with the Compose setup) and restart the
+container, or just wait -- it's picked up per-job either way.
+
+Treat any cookies file as a credential -- don't commit it or share it.
 
 ## Updating yt-dlp
 

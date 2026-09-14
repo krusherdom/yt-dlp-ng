@@ -90,7 +90,16 @@ def _extractors() -> List:
     """All yt-dlp extractor classes except GenericIE, cached at first use."""
     global _extractors_cache
     if _extractors_cache is None:
+        import yt_dlp.plugins
         from yt_dlp.extractor import gen_extractor_classes
+
+        # gen_extractor_classes() does not see plugin extractors (e.g. the
+        # bundled imaglr one) until the plugin loader has run; YoutubeDL() does
+        # this itself, but we never construct one here.
+        try:
+            yt_dlp.plugins.load_all_plugins()
+        except Exception:  # pragma: no cover - never fail import over a plugin
+            pass
 
         classes = []
         for ie in gen_extractor_classes():

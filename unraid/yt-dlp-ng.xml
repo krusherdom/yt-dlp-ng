@@ -34,4 +34,5 @@
   <Config Name="Max Concurrent Downloads" Target="MAX_CONCURRENT" Default="2" Mode="" Description="Number of downloads that may run at the same time" Type="Variable" Display="advanced" Required="false" Mask="false">2</Config>
   <Config Name="Update yt-dlp on Start" Target="UPDATE_ON_START" Default="false" Mode="" Description="If true, runs 'pip install -U yt-dlp' every time the container starts" Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
   <Config Name="Resume on Start" Target="RESUME_ON_START" Default="true" Mode="" Description="If true, automatically requeues jobs that were still queued/running when the container last stopped" Type="Variable" Display="advanced" Required="false" Mask="false">true</Config>
+  <Config Name="Imaglr Max Pages" Target="IMAGLR_MAX_PAGES" Default="500" Mode="" Description="Safety cap on the number of pages enumerated per imaglr.com profile/page/tag/RSS listing" Type="Variable" Display="advanced" Required="false" Mask="false">500</Config>
 </Container>

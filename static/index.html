@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>yt-dlp Web</title>
+  <title>yt-dlp-ng</title>
   <!--
     Assets are referenced relatively so the page works whether the backend
     mounts StaticFiles at "/" (html=True) or serves index.html from "/static/".
@@ -21,7 +21,7 @@
 <header class="topbar">
   <div class="brand">
     <span class="brand-mark" aria-hidden="true">▶</span>
-    <span class="brand-name">yt-dlp Web</span>
+    <span class="brand-name">yt-dlp-ng</span>
   </div>
   <div class="topbar-meta">
     <span class="pill" id="version-pill" title="yt-dlp version">yt-dlp&nbsp;—</span>
@@ -161,6 +161,27 @@
       <h2 class="card-title">Maintenance</h2>
       <button type="button" class="btn btn-primary" id="update-btn">Update yt-dlp</button>
       <pre class="output" id="update-output" hidden></pre>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">Cookies</h2>
+      <dl class="kv">
+        <dt>Status</dt><dd id="ck-status">—</dd>
+        <dt>Domains</dt><dd id="ck-domains" class="wrap">—</dd>
+        <dt>Uploaded</dt><dd id="ck-updated">—</dd>
+      </dl>
+      <p class="muted small">
+        Export cookies with a browser extension such as "Get cookies.txt LOCALLY"
+        while logged in to the site, then upload the file here. It is stored on
+        the server for authenticated downloads and can be deleted, but it can
+        never be downloaded back out.
+      </p>
+      <label class="field-label" for="ck-file">Cookies file (Netscape format, .txt)</label>
+      <input type="file" id="ck-file" accept=".txt,text/plain">
+      <div class="row-end">
+        <button type="button" class="btn btn-ghost btn-sm danger" id="ck-delete-btn" hidden>Delete</button>
+        <button type="button" class="btn btn-primary" id="ck-upload-btn">Upload</button>
+      </div>
     </div>
   </section>
 

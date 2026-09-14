@@ -40,6 +40,11 @@ MAX_CONCURRENT: int = _env_int("MAX_CONCURRENT", 2)
 RESUME_ON_START: bool = _env_bool("RESUME_ON_START", True)
 PORT: int = _env_int("PORT", 8080)
 
+# Pagination cap for the bundled imaglr extractors (profiles/pages/tags).
+# The extractor reads os.environ directly (it must stay importable without the
+# app package), so this is exported only for visibility/documentation.
+IMAGLR_MAX_PAGES: int = _env_int("IMAGLR_MAX_PAGES", 500)
+
 # Derived locations inside CONFIG_DIR.
 DB_PATH: Path = CONFIG_DIR / "jobs.db"
 LOG_DIR: Path = CONFIG_DIR / "logs"

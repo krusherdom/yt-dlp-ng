@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.0 - 2026-09-15
+
+### Added
+- imaglr.com extractor (posts, profiles, pages, tags; videos only).
+- Cookies upload/delete in the Settings tab.
+
 ## v0.1.0 - 2026-09-15
 Initial release.
 
