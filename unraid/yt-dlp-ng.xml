@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<!--
+  Unraid Community Applications template for yt-dlp-ng.
+  The image is built and published to GHCR by GitHub Actions on every push to main.
+-->
+<Container version="2">
+  <Name>yt-dlp-ng</Name>
+  <Repository>ghcr.io/krusherdom/yt-dlp-ng:latest</Repository>
+  <Registry>https://github.com/krusherdom/yt-dlp-ng/pkgs/container/yt-dlp-ng</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/krusherdom/yt-dlp-ng/issues</Support>
+  <Project>https://github.com/krusherdom/yt-dlp-ng</Project>
+  <Overview>A self-hosted web UI for yt-dlp. Queue downloads, watch live progress and logs, manage quality presets and cookies, and bulk-import links from pasted text or a bookmarks HTML file -- all from your browser. Files are saved directly to a folder on your array.</Overview>
+  <Category>MediaApp:Video Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/krusherdom/yt-dlp-ng/main/unraid/yt-dlp-ng.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/krusherdom/yt-dlp-ng/main/unraid/icon.svg</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="WebUI Port" Target="8080" Default="8080" Mode="tcp" Description="Port the web interface listens on" Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+  <Config Name="Downloads" Target="/downloads" Default="/mnt/user/media/youtube" Mode="rw" Description="Folder where downloaded files are saved. The UI can create/browse subfolders inside this path but can never escape it." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/media/youtube</Config>
+  <Config Name="Config" Target="/config" Default="/mnt/user/appdata/yt-dlp-web" Mode="rw" Description="Persistent app data: job database, per-job logs, download archive, and optional cookies.txt" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/yt-dlp-web</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID that owns downloaded files. 99 = Unraid's built-in 'nobody'." Type="Variable" Display="always" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID that owns downloaded files. 100 = Unraid's built-in 'users'." Type="Variable" Display="always" Required="false" Mask="false">100</Config>
+  <Config Name="UMASK" Target="UMASK" Default="022" Mode="" Description="Umask applied to newly created files/folders" Type="Variable" Display="always" Required="false" Mask="false">022</Config>
+  <Config Name="Max Concurrent Downloads" Target="MAX_CONCURRENT" Default="2" Mode="" Description="Number of downloads that may run at the same time" Type="Variable" Display="advanced" Required="false" Mask="false">2</Config>
+  <Config Name="Update yt-dlp on Start" Target="UPDATE_ON_START" Default="false" Mode="" Description="If true, runs 'pip install -U yt-dlp' every time the container starts" Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
+  <Config Name="Resume on Start" Target="RESUME_ON_START" Default="true" Mode="" Description="If true, automatically requeues jobs that were still queued/running when the container last stopped" Type="Variable" Display="advanced" Required="false" Mask="false">true</Config>
+</Container>

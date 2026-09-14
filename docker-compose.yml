@@ -1,0 +1,20 @@
+services:
+  yt-dlp-ng:
+    build: .
+    image: yt-dlp-ng:local
+    container_name: yt-dlp-ng
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./downloads:/downloads
+      - ./config:/config
+    environment:
+      # Local Windows/dev testing defaults -- on Unraid use 99/100 instead
+      # (see unraid/yt-dlp-ng.xml and README.md).
+      PUID: 1000
+      PGID: 1000
+      UMASK: "022"
+      MAX_CONCURRENT: 2
+      RESUME_ON_START: "true"
+      UPDATE_ON_START: "false"
+    restart: unless-stopped

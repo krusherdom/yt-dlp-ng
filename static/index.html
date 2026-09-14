@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>yt-dlp Web</title>
+  <!--
+    Assets are referenced relatively so the page works whether the backend
+    mounts StaticFiles at "/" (html=True) or serves index.html from "/static/".
+    The inline fallback at the bottom covers the third layout: index.html served
+    from "/" while the assets live under "/static/".
+  -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%233b82f6%27/%3E%3Cpath d=%27M12 9v14l11-7z%27 fill=%27white%27/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+  <script defer src="app.js"></script>
+</head>
+<body>
+
+<!-- ───────────────────────────── header ───────────────────────────── -->
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">▶</span>
+    <span class="brand-name">yt-dlp Web</span>
+  </div>
+  <div class="topbar-meta">
+    <span class="pill" id="version-pill" title="yt-dlp version">yt-dlp&nbsp;—</span>
+    <span class="pill pill-muted" id="cookies-pill" title="Cookies file detection">cookies&nbsp;—</span>
+    <span class="conn" id="conn" title="WebSocket connection">
+      <span class="dot" id="conn-dot"></span><span class="conn-text" id="conn-text">connecting</span>
+    </span>
+  </div>
+</header>
+
+<!-- ───────────────────────────── tabs ───────────────────────────── -->
+<nav class="tabs" id="tabs" role="tablist">
+  <button class="tab active" data-tab="queue"    role="tab" aria-selected="true">Queue</button>
+  <button class="tab"        data-tab="import"   role="tab" aria-selected="false">Import</button>
+  <button class="tab"        data-tab="logs"     role="tab" aria-selected="false">Logs</button>
+  <button class="tab"        data-tab="settings" role="tab" aria-selected="false">Settings</button>
+</nav>
+
+<main>
+
+  <!-- ─────────────────────────── Queue tab ─────────────────────────── -->
+  <section id="tab-queue" class="tabpanel" role="tabpanel">
+
+    <div class="card addbar">
+      <div class="addbar-row">
+        <input type="url" id="url" class="grow" placeholder="Paste a video, playlist or channel URL…"
+               autocomplete="off" spellcheck="false">
+        <select id="preset" class="preset" title="Quality preset">
+          <option value="best">best</option>
+          <option value="1080p" selected>1080p</option>
+          <option value="720p">720p</option>
+          <option value="480p">480p</option>
+          <option value="audio-mp3">audio-mp3</option>
+          <option value="audio-m4a">audio-m4a</option>
+        </select>
+        <button type="button" class="btn btn-ghost folder-btn" id="folder-btn"
+                title="Destination subfolder inside the downloads root">
+          <span class="ico" aria-hidden="true">🗀</span><span id="folder-label">/</span>
+        </button>
+        <button type="button" class="btn btn-ghost" id="extra-toggle"
+                aria-expanded="false" title="Extra yt-dlp arguments">⋯</button>
+        <button type="button" class="btn btn-primary" id="add-btn">Add</button>
+      </div>
+      <div class="addbar-extra" id="extra-wrap" hidden>
+        <label class="field-label" for="extra-args">Extra yt-dlp arguments (advanced)</label>
+        <input type="text" id="extra-args" placeholder="--write-subs --sub-langs en"
+               autocomplete="off" spellcheck="false">
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <div class="filters" id="filters" role="group" aria-label="Filter jobs">
+        <button class="chip active" data-filter="all">All</button>
+        <button class="chip" data-filter="active">Active</button>
+        <button class="chip" data-filter="done">Done</button>
+        <button class="chip" data-filter="failed">Failed</button>
+      </div>
+      <div class="toolbar-right">
+        <span class="muted small" id="job-count">0 jobs</span>
+        <button class="btn btn-ghost btn-sm" id="clear-finished">Clear finished</button>
+      </div>
+    </div>
+
+    <div id="jobs" class="jobs"></div>
+    <p class="empty" id="jobs-empty">Nothing queued yet. Paste a URL above to get started.</p>
+  </section>
+
+  <!-- ─────────────────────────── Import tab ────────────────────────── -->
+  <section id="tab-import" class="tabpanel" role="tabpanel" hidden>
+    <div class="card">
+      <label class="field-label" for="import-text">Paste links (any text — URLs are extracted)</label>
+      <textarea id="import-text" rows="6" spellcheck="false"
+                placeholder="https://…&#10;https://…"></textarea>
+
+      <label class="field-label" for="import-file">…or upload a saved HTML page / bookmarks file</label>
+      <input type="file" id="import-file" accept=".html,.htm,text/html">
+
+      <div class="row-end">
+        <button type="button" class="btn btn-ghost btn-sm" id="import-reset">Reset</button>
+        <button type="button" class="btn btn-primary" id="scan-btn">Scan</button>
+      </div>
+    </div>
+
+    <div class="card" id="import-results" hidden>
+      <div class="results-head">
+        <strong id="import-summary">—</strong>
+        <div class="results-actions">
+          <button type="button" class="btn btn-ghost btn-sm" id="sel-all">All</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="sel-none">None</button>
+        </div>
+      </div>
+      <div id="candidates" class="candidates"></div>
+
+      <div class="addbar-row import-add">
+        <select id="import-preset" class="preset" title="Quality preset">
+          <option value="best">best</option>
+          <option value="1080p" selected>1080p</option>
+          <option value="720p">720p</option>
+          <option value="480p">480p</option>
+          <option value="audio-mp3">audio-mp3</option>
+          <option value="audio-m4a">audio-m4a</option>
+        </select>
+        <button type="button" class="btn btn-ghost folder-btn" id="import-folder-btn">
+          <span class="ico" aria-hidden="true">🗀</span><span id="import-folder-label">/</span>
+        </button>
+        <button type="button" class="btn btn-primary grow" id="import-add-btn">Add 0 selected</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ──────────────────────────── Logs tab ─────────────────────────── -->
+  <section id="tab-logs" class="tabpanel" role="tabpanel" hidden>
+    <div class="toolbar">
+      <label class="checkline"><input type="checkbox" id="autoscroll" checked> Auto-scroll</label>
+      <div class="toolbar-right">
+        <span class="muted small" id="log-count">0 lines</span>
+        <button class="btn btn-ghost btn-sm" id="clear-log">Clear</button>
+      </div>
+    </div>
+    <div id="global-log" class="logview" aria-live="off"></div>
+  </section>
+
+  <!-- ────────────────────────── Settings tab ───────────────────────── -->
+  <section id="tab-settings" class="tabpanel" role="tabpanel" hidden>
+    <div class="card">
+      <h2 class="card-title">Status</h2>
+      <dl class="kv">
+        <dt>yt-dlp version</dt><dd id="st-version">—</dd>
+        <dt>Cookies file</dt><dd id="st-cookies">—</dd>
+        <dt>Max concurrent</dt><dd id="st-concurrent">—</dd>
+        <dt>Downloads root</dt><dd id="st-root" class="mono wrap">—</dd>
+      </dl>
+      <p class="muted small">These values come from the container environment and are read-only.</p>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">Maintenance</h2>
+      <button type="button" class="btn btn-primary" id="update-btn">Update yt-dlp</button>
+      <pre class="output" id="update-output" hidden></pre>
+    </div>
+  </section>
+
+</main>
+
+<!-- ─────────────────────── subfolder picker modal ─────────────────── -->
+<dialog id="folder-dialog" class="dialog">
+  <div class="dialog-head">
+    <h2 class="card-title">Choose destination</h2>
+    <button type="button" class="btn btn-ghost btn-sm" id="fd-close" aria-label="Close">✕</button>
+  </div>
+  <div class="crumbs" id="fd-crumbs"></div>
+  <div class="folder-list" id="fd-list"></div>
+  <div class="dialog-new">
+    <input type="text" id="fd-new" placeholder="New folder name" autocomplete="off">
+    <button type="button" class="btn btn-ghost btn-sm" id="fd-create">Create</button>
+  </div>
+  <div class="dialog-foot">
+    <span class="muted small mono wrap" id="fd-current">/</span>
+    <button type="button" class="btn btn-primary" id="fd-use">Use this folder</button>
+  </div>
+</dialog>
+
+<div id="toasts" class="toasts" aria-live="polite"></div>
+
+<!-- ───────────────────────────── templates ───────────────────────────
+     Templates are static author-controlled markup, so cloning them never
+     involves innerHTML with untrusted data. All job fields are written with
+     textContent by app.js.
+-->
+<template id="tpl-job">
+  <div class="job">
+    <div class="job-head">
+      <button class="iconbtn expand" title="Show job log" aria-expanded="false">▸</button>
+      <div class="job-body">
+        <div class="job-title"></div>
+        <div class="job-sub">
+          <span class="tag job-preset"></span>
+          <span class="tag job-folder"></span>
+          <span class="muted job-file"></span>
+        </div>
+      </div>
+      <span class="badge"></span>
+    </div>
+    <div class="job-progress"><div class="job-bar"></div></div>
+    <div class="job-foot">
+      <span class="muted small job-stats"></span>
+      <div class="job-actions">
+        <button class="btn btn-ghost btn-sm" data-act="kids" hidden></button>
+        <button class="btn btn-ghost btn-sm" data-act="cancel" hidden>Cancel</button>
+        <button class="btn btn-ghost btn-sm" data-act="retry" hidden>Retry</button>
+        <button class="btn btn-ghost btn-sm danger" data-act="delete" hidden>Delete</button>
+      </div>
+    </div>
+    <div class="job-error" hidden></div>
+    <div class="job-drawer" hidden><pre class="joblog"></pre></div>
+    <div class="job-kids" hidden></div>
+  </div>
+</template>
+
+<template id="tpl-candidate">
+  <label class="candidate">
+    <input type="checkbox" checked>
+    <span class="cand-body">
+      <span class="cand-url mono"></span>
+      <span class="tag cand-extractor"></span>
+    </span>
+  </label>
+</template>
+
+<template id="tpl-folder-row">
+  <button type="button" class="folder-row"><span class="ico" aria-hidden="true">🗀</span><span class="folder-name"></span></button>
+</template>
+
+<script>
+  // Fallback loader: if the relative asset URLs 404 (index.html served from "/"
+  // while assets are mounted under "/static/"), retry once from /static/.
+  window.addEventListener('load', function () {
+    if (window.__YTDLP_APP_LOADED) return;
+    var l = document.createElement('link');
+    l.rel = 'stylesheet'; l.href = '/static/style.css';
+    document.head.appendChild(l);
+    var s = document.createElement('script');
+    s.src = '/static/app.js';
+    document.body.appendChild(s);
+  });
+</script>
+</body>
+</html>
