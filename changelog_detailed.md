@@ -123,3 +123,105 @@ One shared native `<dialog>` (Escape and backdrop-click close it) opened with a 
 - Cookies: upload returns domains, garbage rejected 400, GET /api/cookies 404, file stored 0600 in /config, delete removes it and status updates.
 - Renamed page title and header brand to yt-dlp-ng.
 - Not verified: tag extractor and logged-in profile JSON path (need the user's real imaglr cookies).
+
+## Proxy API, UI & docs (2026-09-15)
+- `app/main.py`: wired the proxy pool (`app/settings.py` + `app/proxies.py`, built concurrently against the agreed contract) into the API.
+  - Lifespan: `await settings.load()` at startup, `_broadcast_proxies` registered in `proxies.on_change` (guarded against double-registration across repeated `TestClient(app)` lifespans in the same process, since `on_change` is a module-level list), `await proxies.start_background(loop)`; shutdown adds `await proxies.stop_background()`.
+  - `GET /api/proxies` -> `{"settings": public_settings(), "statuses": [...], "summary": {...}}` (`_proxies_payload()` is the single source, reused by PUT's response).
+  - `PUT /api/proxies` (body: `ProxySettings`) -> `await settings.save(payload)`, catching `ValidationError`/`ValueError` into 422/400; on success schedules `proxies.check_all()` as a tracked background task (`_fire_and_forget`, keeps a `Set[asyncio.Task]` reference so it can't be GC'd mid-flight, logs any failure into the log ring instead of raising) and returns the same shape as GET. The masked-URL round-trip (`user:***@` for an existing id keeps the stored URL) turned out to already be handled inside `settings.save()` itself (`_unmask()`), so no duplicate logic was added here.
+  - `POST /api/proxies/test` (body `{"url"}` or `{"id"}`, local `ProxyTestRequest` model -- not added to `app/models.py` since that file belongs to the other in-flight agent): `id` path 404s if unknown, else `await proxies.check_one(id)`; `url` path runs `proxies.check_sync` via `asyncio.to_thread`. Both are wrapped in `asyncio.wait_for(..., timeout=settings.timeout_s + 5)` as a safety net on top of the check's own internal timeout, returning 504 rather than hanging the request. Response is the `ProxyStatus` dict plus a masked `url`.
+  - `POST /api/proxies/check` -> `await proxies.check_all()` -> `{"statuses": [...], "summary": {...}}`.
+  - `status_payload()` gained `"proxies": proxies.summary()`; the WS `snapshot` message gained a top-level `"proxies": {"statuses": [...], "summary": {...}}` (richer than `status.proxies`, which is just the summary counts used by the header pill).
+  - All `ProxyStatus`/`ProxyEntry` dicts use `.model_dump()` (pydantic 2.13 installed; `.dict()` is deprecated).
+- `static/index.html` / `static/app.js` / `static/style.css`: new Settings -> Proxies card -- table of configured proxies (label, masked URL, status dot + live/down/latency/exit-IP meta line with the last error in a `title` tooltip, enabled checkbox, Test, Remove), an add-row (URL + optional label + Test + Add), mode radios (domains / all) with a domains textarea (one per line, lower-cased client-side, hidden outside domains mode), advanced `<details>` (test URL, check interval, timeout), and Re-check all / Save buttons. Save shows "Save changes" and an amber (`--warn`) highlight (`.btn-primary.unsaved`) whenever any field has been touched since the last successful load/save (`markProxyDirty()`); a successful GET/PUT response clears it. Test on a row not yet persisted (added locally, never saved) sends `{url}`; Test on a row that came from the server sends `{id}` (tracked with a client-only `_isNew` flag that a save clears by fully re-deriving state from the PUT response). New proxy rows get a client-generated id (`crypto.randomUUID()`, with a fallback for older browsers) since the id is the stable key both the add/remove UI and later `{id}`-based tests need. Header `#proxy-pill` ("proxies 2/3 live") stays hidden while `configured === 0`, otherwise green/red on `live > 0`; it's kept in sync from three sources: the initial `GET /api/proxies`, live WS `proxies` messages, and (for the count only) every `status` broadcast and the WS `snapshot`, since a cookies-only change still carries the proxy summary. Queue rows gained a `via <value>` tag (`.job-proxy`, reusing `.tag`) driven by `job.proxy`, which the other agent's `worker.py` already populates with a human label or masked URL. All new/changed text is written via `textContent`/`setText`; no inline styles; state transitions use `background`/`border-color`/`transform` only (no side-accent borders, no width/height animation), consistent with the existing design-hook constraints. `node --check static/app.js` is clean.
+- `tests/test_proxy_api.py` (new, 12 tests): `TestClient` against the real app (module-scoped, lifespan runs once), with a per-test fixture monkeypatching `app.config.SETTINGS_FILE` into `tmp_path` and resetting `app.settings`'s and `app.proxies`'s module caches before and after. A `fast_check` fixture stubs `app.proxies.check_sync` (still writing into the real in-memory status table via `proxies._store`) for the settings-CRUD tests, since a PUT schedules a real `check_all()` in the background that would otherwise hit the network for up to `timeout_s` seconds per proxy. Covers: PUT valid settings -> 200 + GET returns masked credentials; PUT with a bad scheme / missing host / missing port -> 4xx (via pydantic's own `field_validator` on `ProxyEntry.url`, already a 422 before the handler runs); PUT round-tripping a masked URL for an existing id keeps the real stored URL while still letting the label change, verified against `app.settings.get()` directly; the test endpoint against `http://127.0.0.1:9` (nothing listening) comes back `live: false` using the *real*, unstubbed health check within the timeout bound; test-endpoint validation (`400` with neither `url` nor `id`, `404` for an unknown `id`); GET with nothing saved returns defaults; `/api/proxies/check` and `/api/status` and the WS `snapshot` all carry the proxy summary/statuses. `python -m pytest tests -q` -> 125 passed (includes the other agent's `tests/test_proxies.py`, not authored here).
+- Docs: README gained a "Proxies" section (why XVideos' Australian age-gate produces "No video formats found" with a 200 response and no sources, the gluetun HTTP/SOCKS5 example, per-site vs. all-downloads mode, health checks + round-robin, retry-once-on-failure, credential masking) and a matching Troubleshooting entry; `PROXY_TEST_URL` added to the environment variable table. Unraid template (`unraid/yt-dlp-ng.xml`) gained `PROXY_TEST_URL` as an advanced `Variable` (default `https://www.google.com/generate_204`). `changelog.md` bumped to v0.3.0.
+- Did not touch: `app/models.py`, `app/settings.py`, `app/proxies.py`, `app/ytdl.py`, `app/worker.py`, `app/db.py`, `app/config.py`, `tests/test_proxies.py` -- all written by the concurrently running agent per the agreed contract; verified by reading them (not by inference) before wiring `main.py` against them, and again before writing this test file.
+
+## Proxy pool backend
+
+Backend half of the proxy-pool feature (plan sections 1-3): settings store,
+health-checked pool, and the wiring into yt-dlp options, the worker and the DB.
+The REST/WS endpoints and the UI are covered separately.
+
+### New: `app/settings.py`
+- Persisted app settings in `config.SETTINGS_FILE` (`/config/settings.json`),
+  written atomically (`tempfile.mkstemp` + `fsync` + `os.replace`) under an
+  asyncio lock and cached in module state.
+- `load()` (awaited once at startup; missing/corrupt/invalid file logs a warning
+  and falls back to defaults), `get()` (sync, never does I/O, returns defaults
+  when `load()` has not run), `save(settings)` (atomic, updates the cache and
+  calls `proxies.reset_statuses_for`).
+- `mask_url()` turns `scheme://user:pw@host:port` into `scheme://user:***@host:port`,
+  rebuilding the netloc from `netloc.rsplit("@", 1)[-1]` so bracketed IPv6
+  literals survive. `public_settings()` is the masked dump the API returns.
+- `_unmask()` on save: an entry whose URL is exactly the mask of the stored URL
+  for the same id keeps the stored URL, so a UI that PUTs back what GET handed
+  it cannot persist `***` and silently break the proxy.
+
+### New: `app/proxies.py`
+- In-memory status table (`ProxyStatus` per proxy id) plus a monotonic
+  `_checked_at` map, both guarded by a single `threading.Lock` that is never
+  held across a network call.
+- `host_matches()` / `needs_proxy()`: dot-boundary suffix matching with `www.`
+  stripped on both sides, so `notxvideos.com` never matches `xvideos.com`.
+- `check_sync()` reuses yt-dlp's own networking
+  (`YoutubeDL.urlopen(Request(test_url, proxies={"all": url}, extensions={"timeout": t}))`),
+  so SOCKS works with no extra dependency and the check exercises exactly the
+  stack a download will use. Live iff status < 400; latency from
+  `time.perf_counter()`; a best-effort exit IP via `api.ipify.org` afterwards.
+- `acquire(url, exclude)`: returns `None` for direct jobs, otherwise checks
+  unchecked/stale candidates inline (it only ever runs on a worker thread) and
+  round-robins over the live ones. Raises `NoLiveProxy` when a URL that must be
+  proxied has nothing alive, rather than leaking the real IP to the site the
+  user explicitly routed through the pool.
+- `check_all()` / `check_one()` fan the blocking checks into the default
+  executor and then await the `on_change` callbacks (each wrapped in
+  try/except so a dead listener cannot kill the periodic loop).
+- `start_background()` / `stop_background()`: periodic checker that re-reads
+  `check_interval_s` every cycle and returns immediately at startup.
+
+### Wiring
+- `app/models.py`: `ProxyEntry` (uuid id, scheme/host/explicit-port/whitespace
+  validation), `ProxySettings` (mode, normalised domain list, bounded interval
+  and timeout, duplicate-URL rejection), `ProxyStatus`, `normalise_domain()`,
+  and `Job.proxy`.
+- `app/config.py`: `SETTINGS_FILE`, `PROXY_TEST_URL` (env override, default
+  `https://www.google.com/generate_204`).
+- `app/ytdl.py`: `build_opts(..., proxy=...)` sets `opts["proxy"]` last, after
+  the extra-args merge, so a pool decision for a must-be-proxied domain cannot
+  be undone by a user's `--proxy`; on direct jobs a user `--proxy` still works.
+- `app/worker.py`: `_run_download` acquires a proxy, reports it with
+  `emit_job(proxy=...)`, logs `[job] via proxy <label>` / `[job] direct`, and
+  retries once on the next live proxy (bounded to two attempts, cancel-aware,
+  with an inline re-check of the failed proxy first). `_run_flat_extract` uses
+  the same selection so geo-gated playlist enumeration is proxied too;
+  `NoLiveProxy` propagates and `_dispatch_single` turns it into a failed job
+  with "No live proxy for <host>; check Settings -> Proxies" instead of the
+  usual "downloading directly" fallback.
+- `app/db.py`: `proxy TEXT` in the schema and `_UPDATABLE`, `_row_to_dict`
+  defaults it to `None`, and `_migrate()` adds the column to databases created
+  by an older version (`PRAGMA table_info` guarded, idempotent, runs on every
+  startup).
+
+### Tests
+`tests/test_proxies.py` (62 cases, no network): an autouse fixture isolates the
+module state and a fake `check_sync` reports health from a dict while recording
+every call, which doubles as the assertion that stale entries are re-checked
+inline. Covers host matching, mode-based routing, round-robin and exclusions,
+`NoLiveProxy`, status/summary bookkeeping, model validation, masking and the
+masked-round-trip guard, settings save/load (including corrupt files),
+`build_opts` proxy handling, and the DB migration against a pre-existing
+database without the column.
+
+### Review fixes (same day)
+- `static/style.css`/`app.js`: header pill actually turns red (new `.pill.bad`, err-colored) when `live == 0` and `configured > 0` -- it previously fell back to the neutral `.pill.off` (grey), contradicting the README.
+- `app/main.py`: `POST /api/proxies/test`'s `asyncio.wait_for` bound was `timeout_s + 5`, which had zero slack for a *live* proxy -- `check_sync` also runs the best-effort exit-IP lookup (`proxies.EXIT_IP_TIMEOUT`, 5s) after a successful check, so a slow-but-live proxy could hit exactly the old bound and 504 despite being live. Now `timeout_s + EXIT_IP_TIMEOUT + 5`. Bumped `FastAPI(version=...)` to `0.3.0` (was still `0.1.0`).
+- `static/app.js`: `applyProxyStatuses()` (the WS live-update path) no longer wipes the test result of a locally-added-but-not-yet-saved proxy row on the next periodic broadcast, since the server has no record of it to report back. `showTab('settings')` now also calls `loadProxies()` (guarded by `!proxyDirty`, so it can't clobber in-progress edits) so a save made in another tab/window shows up without a full reload.
+- Verified (grep, not just review) that no raw proxy URL ever reaches the UI: every `emit_job(..., proxy=...)` in `app/worker.py` passes `proxies.describe(entry)` (label or masked URL); only `ytdl.build_opts(proxy=...)` gets the real `entry.url`/`selected.url`, which never leaves the worker thread.
+- Noted, not fixed (owned by the other agent): `app/models.py`'s `ProxySettings._no_duplicates` validator runs before `settings.py`'s `_unmask()`, so a PUT containing both a round-tripped masked URL and a freshly typed real URL that happen to unmask to the same value would pass duplicate-checking and then collide -- an obscure edge case, reported rather than touched since `models.py`/`settings.py` are not owned by this stage.
+- Re-ran `pytest tests -q` (187 passed) and `node --check static/app.js` (clean) after these fixes.
+
+## v0.3.0 integration & verification (2026-09-15)
+- Verified in Docker with two Squid containers plus a dead entry: test endpoint reports down/live with latency and exit IP; credentials masked in every response and in settings.json round-trips; domains mode routes xvideos.com jobs round-robin over live proxies (squid access log confirms) while YouTube goes direct; retry on the next live proxy after a failure; "all" mode proxies YouTube; killing the proxy mid-download triggers retry on the other proxy and the download completes; with no live proxy the job fails fast with "No live proxy for www.xvideos.com".
+- XVideos from an Australian exit still returns no formats (site age gate); only a non-AU proxy exit resolves it, which the user's LAN proxies provide.

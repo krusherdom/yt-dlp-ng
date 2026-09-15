@@ -20,7 +20,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Set
 
-from . import config, db, paths, ytdl
+from . import config, db, paths, proxies, ytdl
 
 # --------------------------------------------------------------------------
 # Module state
@@ -45,6 +45,13 @@ log_ring: Deque[str] = deque(maxlen=config.LOG_RING_SIZE)
 _deleted_ids: Deque[str] = deque(maxlen=512)
 
 TERMINAL = ("done", "failed", "cancelled")
+
+#: A proxied download that errors is retried once on the next live proxy.
+MAX_PROXY_ATTEMPTS = 2
+
+
+def _no_proxy_message(host: str) -> str:
+    return f"No live proxy for {host}; check Settings → Proxies"
 
 
 class JobCancelled(Exception):
@@ -223,8 +230,21 @@ def _run_download(job: Dict[str, Any]) -> None:
         return
 
     logger = JobLogger(job_id, cancel)
+
     try:
-        opts = ytdl.build_opts(
+        entry = proxies.acquire(job["url"])
+    except proxies.NoLiveProxy as exc:
+        message = _no_proxy_message(exc.host)
+        emit_job(job_id, status="failed", error=message, speed=None, eta=None, proxy=None)
+        emit_log(job_id, f"[job] failed: {message}")
+        _cancel_flags.pop(job_id, None)
+        return
+    except Exception as exc:  # the pool must never take a job down by itself
+        emit_log(job_id, f"[job] proxy selection failed ({exc}); going direct")
+        entry = None
+
+    def _opts_for(selected) -> Dict[str, Any]:
+        return ytdl.build_opts(
             preset=job.get("preset") or ytdl.DEFAULT_PRESET,
             target_dir=target,
             extra_args=job.get("extra_args") or "",
@@ -235,44 +255,95 @@ def _run_download(job: Dict[str, Any]) -> None:
             # download, otherwise a second request with a different preset or
             # folder would silently report "done" with no file.
             use_archive=bool(job.get("parent_id")),
+            proxy=selected.url if selected is not None else None,
         )
-    except ytdl.ExtraArgsError as exc:
-        emit_job(job_id, status="failed", error=str(exc))
-        return
-
-    emit_job(job_id, status="running", error=None, progress=job.get("progress") or 0.0)
-    emit_log(job_id, f"[job] starting {job.get('url')} (preset={job.get('preset')})")
 
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(job["url"], download=True)
-        title = None
-        filename = None
-        if isinstance(info, dict):
-            title = info.get("title")
-            req = info.get("requested_downloads") or []
-            if req:
-                filename = Path(req[0].get("filepath") or req[0].get("filename") or "").name
-            if not filename and info.get("_filename"):
-                filename = Path(info["_filename"]).name
-        emit_job(
-            job_id,
-            status="done",
-            progress=100.0,
-            speed=None,
-            eta=None,
-            error=None,
-            **({"title": title} if title else {}),
-            **({"filename": filename} if filename else {}),
-        )
-        emit_log(job_id, "[job] done")
-    except JobCancelled:
-        emit_job(job_id, status="cancelled", speed=None, eta=None)
-        emit_log(job_id, "[job] cancelled")
-    except Exception as exc:
-        message = str(exc).strip() or exc.__class__.__name__
-        emit_job(job_id, status="failed", error=message[:2000], speed=None, eta=None)
-        emit_log(job_id, f"[job] failed: {message}")
+        opts = _opts_for(entry)
+    except ytdl.ExtraArgsError as exc:
+        emit_job(job_id, status="failed", error=str(exc))
+        _cancel_flags.pop(job_id, None)
+        return
+
+    label = proxies.describe(entry)
+    emit_job(
+        job_id,
+        status="running",
+        error=None,
+        progress=job.get("progress") or 0.0,
+        proxy=label,
+    )
+    emit_log(job_id, f"[job] starting {job.get('url')} (preset={job.get('preset')})")
+    emit_log(job_id, f"[job] via proxy {label}" if label else "[job] direct")
+
+    tried: Set[str] = {entry.id} if entry is not None else set()
+    attempt = 0
+    try:
+        while True:
+            attempt += 1
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(job["url"], download=True)
+                title = None
+                filename = None
+                if isinstance(info, dict):
+                    title = info.get("title")
+                    req = info.get("requested_downloads") or []
+                    if req:
+                        filename = Path(
+                            req[0].get("filepath") or req[0].get("filename") or ""
+                        ).name
+                    if not filename and info.get("_filename"):
+                        filename = Path(info["_filename"]).name
+                emit_job(
+                    job_id,
+                    status="done",
+                    progress=100.0,
+                    speed=None,
+                    eta=None,
+                    error=None,
+                    **({"title": title} if title else {}),
+                    **({"filename": filename} if filename else {}),
+                )
+                emit_log(job_id, "[job] done")
+                return
+            except JobCancelled:
+                emit_job(job_id, status="cancelled", speed=None, eta=None)
+                emit_log(job_id, "[job] cancelled")
+                return
+            except Exception as exc:
+                message = str(exc).strip() or exc.__class__.__name__
+                nxt = None
+                if entry is not None and attempt < MAX_PROXY_ATTEMPTS and not cancel.is_set():
+                    emit_log(job_id, f"[job] proxy attempt failed: {message}")
+                    try:
+                        proxies.check_sync(entry)
+                    except Exception:
+                        pass
+                    if not cancel.is_set():
+                        try:
+                            nxt = proxies.acquire(job["url"], exclude=set(tried))
+                        except proxies.NoLiveProxy:
+                            nxt = None
+                        except Exception:
+                            nxt = None
+                if nxt is not None:
+                    try:
+                        opts = _opts_for(nxt)
+                    except ytdl.ExtraArgsError:
+                        nxt = None
+                if nxt is not None:
+                    entry = nxt
+                    tried.add(nxt.id)
+                    label = proxies.describe(nxt)
+                    emit_log(job_id, f"[job] retrying via {label}")
+                    emit_job(
+                        job_id, proxy=label, progress=0.0, speed=None, eta=None, error=None
+                    )
+                    continue
+                emit_job(job_id, status="failed", error=message[:2000], speed=None, eta=None)
+                emit_log(job_id, f"[job] failed: {message}")
+                return
     finally:
         _cancel_flags.pop(job_id, None)
 
@@ -286,12 +357,21 @@ def _run_flat_extract(job: Dict[str, Any]) -> Dict[str, Any]:
     logger = JobLogger(job_id, cancel)
 
     target = config.DOWNLOADS_ROOT
+    # Enumeration hits the same site as the download, so a geo/age-gated
+    # playlist has to go through the pool too. NoLiveProxy propagates: the
+    # dispatcher turns it into a failed job with a clear message rather than
+    # falling back to an unproxied direct download.
+    entry = proxies.acquire(job["url"])
+    if entry is not None:
+        emit_log(job_id, f"[job] enumerating via proxy {proxies.describe(entry)}")
+
     opts = ytdl.build_opts(
         preset=job.get("preset") or ytdl.DEFAULT_PRESET,
         target_dir=target,
         extra_args=None,
         flat=True,
         logger=logger,
+        proxy=entry.url if entry is not None else None,
     )
 
     with yt_dlp.YoutubeDL(opts) as ydl:
@@ -357,6 +437,14 @@ async def _dispatch_single(job: Dict[str, Any]) -> None:
     _cancel_flags.setdefault(job_id, threading.Event())
     try:
         result = await _loop.run_in_executor(_extract_pool, _run_flat_extract, dict(job))
+    except proxies.NoLiveProxy as exc:
+        # Must be proxied but nothing is alive: fail loudly instead of quietly
+        # retrying direct (which is exactly the leak the pool exists to avoid).
+        message = _no_proxy_message(exc.host)
+        emit_job(job_id, status="failed", error=message, speed=None, eta=None, proxy=None)
+        emit_log(job_id, f"[job] failed: {message}")
+        _cancel_flags.pop(job_id, None)
+        return
     except Exception as exc:
         # Enumeration failed (private/unsupported/offline). Try downloading it
         # directly rather than failing outright.

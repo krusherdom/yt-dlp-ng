@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.3.0 - 2026-09-15
+
+### Added
+- Proxy pool (Settings tab -> Proxies): health-checked HTTP/HTTPS/SOCKS4/SOCKS5 proxies with round-robin selection, a per-domain or all-downloads routing rule, and an automatic retry on the next live proxy when a proxied download fails. Fixes geo/age-gated sites (e.g. XVideos' Australian age-verification gate returning "No video formats found") by routing those downloads through a proxy with a different exit IP.
+- Header pill showing how many configured proxies are currently live; a `via <proxy>` tag on queue rows for jobs routed through the pool.
+- `PROXY_TEST_URL` environment variable (default `https://www.google.com/generate_204`).
+
 ## v0.2.0 - 2026-09-15
 
 ### Added

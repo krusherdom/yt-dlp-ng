@@ -182,7 +182,12 @@ window.__YTDLP_APP_LOADED = true;
       b.setAttribute('aria-selected', on ? 'true' : 'false');
     });
     $$('.tabpanel').forEach((p) => { p.hidden = p.id !== 'tab-' + name; });
-    if (name === 'settings') loadStatus();
+    if (name === 'settings') {
+      loadStatus();
+      // Refresh the proxy list/settings from the server too, but never while
+      // the user has unsaved edits in progress (another tab may have saved).
+      if (!proxyDirty) loadProxies();
+    }
   }
 
   // ─────────────────────────── job list render ──────────────────────────
@@ -320,6 +325,11 @@ window.__YTDLP_APP_LOADED = true;
     const errEl = $('.job-error', el);
     if (job.error) { setText(errEl, job.error); errEl.hidden = false; }
     else { errEl.hidden = true; setText(errEl, ''); }
+
+    // ── proxy tag ──────────────────────────────────────────────────────
+    const proxyTag = $('.job-proxy', el);
+    if (job.proxy) { setText(proxyTag, 'via ' + job.proxy); proxyTag.hidden = false; }
+    else { proxyTag.hidden = true; setText(proxyTag, ''); }
 
     // ── action buttons ─────────────────────────────────────────────────
     const act = (name) => $('[data-act="' + name + '"]', el);
@@ -832,6 +842,10 @@ window.__YTDLP_APP_LOADED = true;
     setText(els.ckUpdated, s.cookies_detected ? (fmtDate(s.cookies_updated_at) || '—') : '—');
     els.ckDeleteBtn.hidden = !s.cookies_detected;
     resetDeleteConfirm();
+
+    // status broadcasts (e.g. after a cookies change) also carry the proxy
+    // summary, so the header pill stays accurate without a dedicated fetch.
+    if (s.proxies) { proxySummary = s.proxies; renderProxyPill(); }
   }
 
   async function loadStatus() {
@@ -925,6 +939,256 @@ window.__YTDLP_APP_LOADED = true;
     }
   }
 
+  // ───────────────────────────── proxies ─────────────────────────────────
+
+  let proxySettings = {
+    proxies: [], mode: 'domains', domains: [], test_url: '', check_interval_s: 300, timeout_s: 8
+  };
+  let proxyDirty = false;
+  const proxyStatuses = new Map();   // id -> status dict {id,live,latency_ms,last_checked,last_error,exit_ip}
+  let proxySummary = { configured: 0, enabled: 0, live: 0 };
+
+  function uuidish() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+    return 'tmp-' + Date.now().toString(16) + '-' + Math.random().toString(16).slice(2);
+  }
+
+  async function runProxyTest(payload) {
+    return apiJSON('/api/proxies/test', 'POST', payload);
+  }
+
+  function statusDotClass(st) {
+    if (!st) return '';
+    if (st.live === true) return 'on';
+    if (st.live === false) return 'off';
+    return '';
+  }
+
+  function renderProxyPill() {
+    const configured = proxySummary.configured || 0;
+    const live = proxySummary.live || 0;
+    els.proxyPill.hidden = configured === 0;
+    if (configured === 0) return;
+    els.proxyPill.className = 'pill ' + (live > 0 ? 'ok' : 'bad');
+    setText(els.proxyPill, 'proxies ' + live + '/' + configured + ' live');
+  }
+
+  function updateProxySaveState() {
+    els.proxySaveBtn.classList.toggle('unsaved', proxyDirty);
+    setText(els.proxySaveBtn, proxyDirty ? 'Save changes' : 'Save');
+  }
+
+  function markProxyDirty() {
+    proxyDirty = true;
+    updateProxySaveState();
+  }
+
+  function renderProxyRows() {
+    const box = els.proxyTable;
+    box.textContent = '';
+    const list = proxySettings.proxies;
+    els.proxyEmpty.hidden = list.length > 0;
+    for (const p of list) {
+      const row = tpl('tpl-proxy-row');
+      row.dataset.id = p.id;
+      const st = proxyStatuses.get(p.id);
+
+      $('.proxy-dot', row).className = 'dot proxy-dot ' + statusDotClass(st);
+      setText($('.proxy-label', row), p.label || '');
+      setText($('.proxy-url', row), p.url || '');
+
+      const bits = [];
+      if (st) {
+        bits.push(st.live === true ? 'live' : st.live === false ? 'down' : 'unchecked');
+        if (st.live && st.latency_ms !== undefined && st.latency_ms !== null) bits.push(Math.round(st.latency_ms) + ' ms');
+        if (st.exit_ip) bits.push('exit ' + st.exit_ip);
+      } else {
+        bits.push('unchecked');
+      }
+      const metaEl = $('.proxy-meta', row);
+      setText(metaEl, bits.join('  ·  '));
+      metaEl.title = (st && st.last_error) ? st.last_error : '';
+
+      const cb = $('.proxy-enabled', row);
+      cb.checked = p.enabled !== false;
+      cb.addEventListener('change', () => { p.enabled = cb.checked; markProxyDirty(); });
+
+      $('[data-act="test"]', row).addEventListener('click', (ev) => {
+        if (p._isNew) testUnsavedProxyRow(p, ev.target);
+        else testSavedProxyRow(p.id, ev.target);
+      });
+      $('[data-act="remove"]', row).addEventListener('click', () => {
+        proxySettings.proxies = proxySettings.proxies.filter((x) => x.id !== p.id);
+        proxyStatuses.delete(p.id);
+        markProxyDirty();
+        renderProxyRows();
+      });
+
+      box.appendChild(row);
+    }
+  }
+
+  function renderProxySettings() {
+    const s = proxySettings;
+    $$('input[name="proxy-mode"]').forEach((r) => { r.checked = r.value === s.mode; });
+    els.proxyDomainsWrap.hidden = s.mode !== 'domains';
+    els.proxyDomains.value = (s.domains || []).join('\n');
+    els.proxyTestUrl.value = s.test_url || '';
+    els.proxyCheckInterval.value = String(s.check_interval_s);
+    els.proxyTimeout.value = String(s.timeout_s);
+    renderProxyRows();
+    updateProxySaveState();
+  }
+
+  /** GET /api/proxies response (or a PUT response, same shape) -> full repaint. */
+  function applyProxiesPayload(data) {
+    if (data && data.settings) {
+      const s = data.settings;
+      proxySettings = {
+        proxies: (Array.isArray(s.proxies) ? s.proxies : []).map((p) => ({
+          id: p.id, url: p.url || '', label: p.label || '', enabled: p.enabled !== false
+        })),
+        mode: s.mode === 'all' ? 'all' : 'domains',
+        domains: Array.isArray(s.domains) ? s.domains.slice() : [],
+        test_url: s.test_url || '',
+        check_interval_s: s.check_interval_s || 300,
+        timeout_s: s.timeout_s || 8
+      };
+      proxyDirty = false;
+    }
+    if (data && Array.isArray(data.statuses)) {
+      proxyStatuses.clear();
+      for (const st of data.statuses) if (st && st.id !== undefined) proxyStatuses.set(st.id, st);
+    }
+    if (data && data.summary) proxySummary = data.summary;
+    renderProxySettings();
+    renderProxyPill();
+  }
+
+  /** Live WS update ({statuses, summary}) -- statuses/pill only, never the form. */
+  function applyProxyStatuses(statuses, summary) {
+    // The server has never heard of a locally-added, not-yet-saved row, so a
+    // periodic broadcast would otherwise wipe the "live / N ms" result the
+    // user just got from testing it. Keep those around across the clear.
+    const preserved = new Map();
+    for (const p of proxySettings.proxies) {
+      if (p._isNew && proxyStatuses.has(p.id)) preserved.set(p.id, proxyStatuses.get(p.id));
+    }
+    proxyStatuses.clear();
+    for (const st of (statuses || [])) if (st && st.id !== undefined) proxyStatuses.set(st.id, st);
+    for (const [id, st] of preserved) if (!proxyStatuses.has(id)) proxyStatuses.set(id, st);
+    if (summary) proxySummary = summary;
+    renderProxyRows();
+    renderProxyPill();
+  }
+
+  async function loadProxies() {
+    try {
+      applyProxiesPayload(await api('/api/proxies'));
+    } catch (e) {
+      toast('Could not load proxies: ' + e.message, 'error');
+    }
+  }
+
+  async function testSavedProxyRow(id, btn) {
+    if (btn) btn.disabled = true;
+    try {
+      const data = await runProxyTest({ id: id });
+      proxyStatuses.set(id, data);
+      renderProxyRows();
+    } catch (e) {
+      toast('Test failed: ' + e.message, 'error');
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function testUnsavedProxyRow(entry, btn) {
+    if (btn) btn.disabled = true;
+    try {
+      const data = await runProxyTest({ url: entry.url });
+      proxyStatuses.set(entry.id, data);
+      renderProxyRows();
+    } catch (e) {
+      toast('Test failed: ' + e.message, 'error');
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function testNewProxyField() {
+    const url = els.proxyNewUrl.value.trim();
+    if (!url) { toast('Enter a proxy URL first', 'error'); els.proxyNewUrl.focus(); return; }
+    els.proxyNewTest.disabled = true;
+    setText(els.proxyNewResult, 'Testing…');
+    try {
+      const data = await runProxyTest({ url: url });
+      const bits = [data.live ? 'live' : 'down'];
+      if (data.live && data.latency_ms !== undefined && data.latency_ms !== null) bits.push(Math.round(data.latency_ms) + ' ms');
+      if (data.exit_ip) bits.push('exit ' + data.exit_ip);
+      if (!data.live && data.last_error) bits.push(String(data.last_error));
+      setText(els.proxyNewResult, bits.join('  ·  '));
+    } catch (e) {
+      setText(els.proxyNewResult, 'Test failed: ' + e.message);
+    } finally {
+      els.proxyNewTest.disabled = false;
+    }
+  }
+
+  function addProxyRow() {
+    const url = els.proxyNewUrl.value.trim();
+    if (!url) { toast('Enter a proxy URL first', 'error'); els.proxyNewUrl.focus(); return; }
+    proxySettings.proxies.push({
+      id: uuidish(),
+      url: url,
+      label: els.proxyNewLabel.value.trim(),
+      enabled: true,
+      _isNew: true
+    });
+    els.proxyNewUrl.value = '';
+    els.proxyNewLabel.value = '';
+    setText(els.proxyNewResult, '');
+    markProxyDirty();
+    renderProxyRows();
+  }
+
+  async function saveProxies() {
+    const interval = parseInt(els.proxyCheckInterval.value, 10);
+    const timeout = parseInt(els.proxyTimeout.value, 10);
+    const body = {
+      proxies: proxySettings.proxies.map((p) => ({
+        id: p.id, url: p.url, label: p.label || '', enabled: p.enabled !== false
+      })),
+      mode: proxySettings.mode,
+      domains: proxySettings.domains || [],
+      test_url: els.proxyTestUrl.value.trim() || proxySettings.test_url,
+      check_interval_s: isFinite(interval) && interval > 0 ? interval : proxySettings.check_interval_s,
+      timeout_s: isFinite(timeout) && timeout > 0 ? timeout : proxySettings.timeout_s
+    };
+    els.proxySaveBtn.disabled = true;
+    try {
+      applyProxiesPayload(await apiJSON('/api/proxies', 'PUT', body));
+      toast('Proxy settings saved', 'ok');
+    } catch (e) {
+      toast('Save failed: ' + e.message, 'error');
+    } finally {
+      els.proxySaveBtn.disabled = false;
+    }
+  }
+
+  async function recheckProxies() {
+    els.proxyRecheckBtn.disabled = true;
+    try {
+      const data = await api('/api/proxies/check', { method: 'POST' });
+      applyProxyStatuses(data.statuses, data.summary);
+      toast('Re-checked proxies', 'ok');
+    } catch (e) {
+      toast('Re-check failed: ' + e.message, 'error');
+    } finally {
+      els.proxyRecheckBtn.disabled = false;
+    }
+  }
+
   // ───────────────────────────── WebSocket ──────────────────────────────
 
   let ws = null;
@@ -998,6 +1262,7 @@ window.__YTDLP_APP_LOADED = true;
       // page has everything after a single round trip.
       if (msg.status) applyStatus(msg.status);
       if (Array.isArray(msg.logs) && state.logLines === 0) seedLogLines(msg.logs);
+      if (msg.proxies) applyProxyStatuses(msg.proxies.statuses, msg.proxies.summary);
       return;
     }
 
@@ -1028,6 +1293,12 @@ window.__YTDLP_APP_LOADED = true;
     // Settings tab stay in sync without polling.
     if (msg.type === 'status') {
       applyStatus(msg);
+    }
+
+    // Pushed by the backend whenever the proxy pool's health-check results
+    // change (startup, periodic timer, a save, or a manual re-check).
+    if (msg.type === 'proxies') {
+      applyProxyStatuses(msg.proxies, msg.summary);
     }
   }
 
@@ -1089,6 +1360,23 @@ window.__YTDLP_APP_LOADED = true;
     els.ckFile         = $('#ck-file');
     els.ckUploadBtn    = $('#ck-upload-btn');
     els.ckDeleteBtn    = $('#ck-delete-btn');
+
+    els.proxyPill          = $('#proxy-pill');
+    els.proxyTable         = $('#proxy-table');
+    els.proxyEmpty         = $('#proxy-empty');
+    els.proxyNewUrl        = $('#proxy-new-url');
+    els.proxyNewLabel      = $('#proxy-new-label');
+    els.proxyNewTest       = $('#proxy-new-test');
+    els.proxyNewAdd        = $('#proxy-new-add');
+    els.proxyNewResult     = $('#proxy-new-result');
+    els.proxyMode          = $('#proxy-mode');
+    els.proxyDomainsWrap   = $('#proxy-domains-wrap');
+    els.proxyDomains       = $('#proxy-domains');
+    els.proxyTestUrl       = $('#proxy-test-url');
+    els.proxyCheckInterval = $('#proxy-check-interval');
+    els.proxyTimeout       = $('#proxy-timeout');
+    els.proxyRecheckBtn    = $('#proxy-recheck-btn');
+    els.proxySaveBtn       = $('#proxy-save-btn');
 
     els.folderDialog   = $('#folder-dialog');
     els.fdCrumbs       = $('#fd-crumbs');
@@ -1155,6 +1443,27 @@ window.__YTDLP_APP_LOADED = true;
     els.ckUploadBtn.addEventListener('click', uploadCookies);
     els.ckDeleteBtn.addEventListener('click', onDeleteCookiesClick);
 
+    // settings: proxies
+    els.proxyNewTest.addEventListener('click', testNewProxyField);
+    els.proxyNewAdd.addEventListener('click', addProxyRow);
+    els.proxyNewUrl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addProxyRow(); } });
+    els.proxyMode.addEventListener('change', (e) => {
+      if (!e.target || e.target.name !== 'proxy-mode') return;
+      proxySettings.mode = e.target.value === 'all' ? 'all' : 'domains';
+      els.proxyDomainsWrap.hidden = proxySettings.mode !== 'domains';
+      markProxyDirty();
+    });
+    els.proxyDomains.addEventListener('input', () => {
+      proxySettings.domains = els.proxyDomains.value.split('\n')
+        .map((s) => s.trim().toLowerCase()).filter(Boolean);
+      markProxyDirty();
+    });
+    els.proxyTestUrl.addEventListener('input', markProxyDirty);
+    els.proxyCheckInterval.addEventListener('input', markProxyDirty);
+    els.proxyTimeout.addEventListener('input', markProxyDirty);
+    els.proxyRecheckBtn.addEventListener('click', recheckProxies);
+    els.proxySaveBtn.addEventListener('click', saveProxies);
+
     // folder dialog
     els.fdClose.addEventListener('click', closeFolderPicker);
     els.fdCreate.addEventListener('click', createFolder);
@@ -1184,6 +1493,7 @@ window.__YTDLP_APP_LOADED = true;
     loadStatus();
     syncPresets();
     seedGlobalLog();
+    loadProxies();
 
     // Seed the queue over REST so the list is populated even before the
     // WebSocket snapshot arrives (the snapshot then replaces it).

@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     error       TEXT,
     parent_id   TEXT,
     type        TEXT NOT NULL DEFAULT 'single',
+    proxy       TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -52,6 +53,12 @@ _UPDATABLE = {
     "error",
     "parent_id",
     "type",
+    "proxy",
+}
+
+#: column -> DDL type for columns added after v0.1. Applied by _migrate().
+_ADDED_COLUMNS = {
+    "proxy": "TEXT",
 }
 
 
@@ -75,8 +82,29 @@ async def init_db() -> None:
     await conn.execute("PRAGMA synchronous=NORMAL")
     await conn.execute("PRAGMA foreign_keys=ON")
     await conn.executescript(SCHEMA)
+    await _migrate(conn)
     await conn.commit()
     _conn = conn
+
+
+async def _migrate(conn: aiosqlite.Connection) -> int:
+    """Add columns missing from a database created by an older version.
+
+    ``CREATE TABLE IF NOT EXISTS`` is a no-op on an existing table, so new
+    columns have to be bolted on explicitly. Guarded by ``PRAGMA table_info``
+    and therefore safe to run on every startup.
+    """
+    async with conn.execute("PRAGMA table_info(jobs)") as cur:
+        rows = await cur.fetchall()
+    existing = {r["name"] for r in rows}
+    added = 0
+    for column, ddl in _ADDED_COLUMNS.items():
+        if column not in existing:
+            await conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {ddl}")
+            added += 1
+    if added:
+        await conn.commit()
+    return added
 
 
 async def close_db() -> None:
@@ -95,6 +123,9 @@ def _require() -> aiosqlite.Connection:
 def _row_to_dict(row: aiosqlite.Row) -> Dict[str, Any]:
     d = dict(row)
     d["progress"] = float(d.get("progress") or 0.0)
+    # Columns added by a migration are absent from rows read through an older
+    # connection; keep the job dict shape stable for the API and the UI.
+    d.setdefault("proxy", None)
     return d
 
 

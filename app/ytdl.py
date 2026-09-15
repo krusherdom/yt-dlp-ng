@@ -166,6 +166,7 @@ def build_opts(
     postprocessor_hooks: Optional[List[Any]] = None,
     logger: Any = None,
     use_archive: bool = False,
+    proxy: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Assemble the full yt-dlp option dict for one job."""
     opts: Dict[str, Any] = preset_options(preset)
@@ -235,6 +236,12 @@ def build_opts(
             opts["postprocessors"] = list(opts.get("postprocessors") or []) + [
                 pp for pp in extra_pps if pp not in (opts.get("postprocessors") or [])
             ]
+
+    # Applied last, so a proxy the pool picked for a must-be-proxied domain
+    # cannot be undone by a user's "--proxy" in extra args. When the pool chose
+    # nothing (direct job) a user-supplied --proxy still applies.
+    if proxy:
+        opts["proxy"] = proxy
 
     return opts
 

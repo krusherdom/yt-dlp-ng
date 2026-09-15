@@ -12,7 +12,7 @@ import tempfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from fastapi import (
     FastAPI,
@@ -27,15 +27,19 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ValidationError
 
-from . import config, db, importer, paths, worker, ytdl
-from .models import BulkJobCreate, FolderCreate, JobCreate
+from . import config, db, importer, paths, proxies, settings, worker, ytdl
+from .models import BulkJobCreate, FolderCreate, JobCreate, ProxySettings
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config.ensure_dirs()
     await db.init_db()
+    await settings.load()
+    if _broadcast_proxies not in proxies.on_change:
+        proxies.on_change.append(_broadcast_proxies)
     await worker.start()
     if config.RESUME_ON_START:
         try:
@@ -46,6 +50,8 @@ async def lifespan(app: FastAPI):
             worker.log_ring.append(f"- | [startup] resume failed: {exc}")
     else:
         await db.mark_interrupted_running()
+    loop = asyncio.get_running_loop()
+    await proxies.start_background(loop)
     worker.log_ring.append(
         f"- | [startup] downloads={config.DOWNLOADS_ROOT} config={config.CONFIG_DIR} "
         f"max_concurrent={config.MAX_CONCURRENT}"
@@ -53,11 +59,12 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        await proxies.stop_background()
         await worker.stop()
         await db.close_db()
 
 
-app = FastAPI(title="yt-dlp Web", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="yt-dlp Web", version="0.3.0", lifespan=lifespan)
 
 
 # --------------------------------------------------------------------------
@@ -119,6 +126,7 @@ def status_payload() -> Dict[str, Any]:
         "config_dir": str(config.CONFIG_DIR),
         "resume_on_start": config.RESUME_ON_START,
         "presets": ytdl.PRESET_NAMES,
+        "proxies": proxies.summary(),
     }
 
 
@@ -489,6 +497,131 @@ async def delete_cookies() -> Dict[str, Any]:
 
 
 # --------------------------------------------------------------------------
+# Proxies (health-checked pool used to route downloads around geo/age gates)
+# --------------------------------------------------------------------------
+
+
+class ProxyTestRequest(BaseModel):
+    url: Optional[str] = None
+    id: Optional[str] = None
+
+
+async def _broadcast_proxies(statuses: List[Any]) -> None:
+    """Registered in ``proxies.on_change``; mirrors ``_broadcast_status`` so
+    every open tab repaints live as health checks complete."""
+    if not worker.clients:
+        return
+    message = json.dumps(
+        {
+            "type": "proxies",
+            "proxies": [s.model_dump() for s in statuses],
+            "summary": proxies.summary(),
+        },
+        default=str,
+    )
+    dead = []
+    for ws in list(worker.clients):
+        try:
+            await ws.send_text(message)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        worker.clients.discard(ws)
+
+
+def _proxies_payload() -> Dict[str, Any]:
+    return {
+        "settings": settings.public_settings(),
+        "statuses": [s.model_dump() for s in proxies.statuses()],
+        "summary": proxies.summary(),
+    }
+
+
+_background_tasks: Set[asyncio.Task] = set()
+
+
+def _fire_and_forget(coro: Any) -> asyncio.Task:
+    """Run coro as a background task, keeping a reference so it is not
+    garbage-collected mid-flight, and logging (not raising) any failure."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+
+    def _done(t: asyncio.Task) -> None:
+        _background_tasks.discard(t)
+        if not t.cancelled():
+            exc = t.exception()
+            if exc is not None:
+                worker.log_ring.append(f"- | [proxies] background check failed: {exc}")
+
+    task.add_done_callback(_done)
+    return task
+
+
+@app.get("/api/proxies")
+async def get_proxies() -> Dict[str, Any]:
+    return _proxies_payload()
+
+
+@app.put("/api/proxies")
+async def put_proxies(payload: ProxySettings) -> Dict[str, Any]:
+    # settings.save() resolves a masked url that round-tripped from GET back
+    # to the stored (unmasked) one for a matching existing id.
+    try:
+        await settings.save(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    _fire_and_forget(proxies.check_all())
+    return _proxies_payload()
+
+
+@app.post("/api/proxies/test")
+async def test_proxy(payload: ProxyTestRequest) -> Dict[str, Any]:
+    cur = settings.get()
+    # A live proxy also pays for the (best-effort) exit-IP lookup after the
+    # health check itself, so the bound must cover both plus a little slack.
+    bound = cur.timeout_s + proxies.EXIT_IP_TIMEOUT + 5
+
+    if payload.id:
+        entry = next((p for p in cur.proxies if p.id == payload.id), None)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="Proxy not found")
+        try:
+            result = await asyncio.wait_for(proxies.check_one(payload.id), timeout=bound)
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="Proxy check timed out")
+        masked = settings.mask_url(entry.url)
+    elif payload.url and payload.url.strip():
+        url = payload.url.strip()
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(proxies.check_sync, url, cur.test_url, cur.timeout_s),
+                timeout=bound,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="Proxy check timed out")
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        masked = settings.mask_url(url)
+    else:
+        raise HTTPException(status_code=400, detail="Provide 'url' or 'id'")
+
+    body = result.model_dump()
+    body["url"] = masked
+    return body
+
+
+@app.post("/api/proxies/check")
+async def check_proxies_now() -> Dict[str, Any]:
+    result = await proxies.check_all()
+    return {
+        "statuses": [s.model_dump() for s in result],
+        "summary": proxies.summary(),
+    }
+
+
+# --------------------------------------------------------------------------
 # WebSocket (registered before the static mount so StaticFiles cannot claim it)
 # --------------------------------------------------------------------------
 
@@ -506,6 +639,10 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                     "jobs": jobs,
                     "logs": list(worker.log_ring)[-200:],
                     "status": status_payload(),
+                    "proxies": {
+                        "statuses": [s.model_dump() for s in proxies.statuses()],
+                        "summary": proxies.summary(),
+                    },
                 },
                 default=str,
             )

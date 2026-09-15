@@ -116,6 +116,7 @@ Create a new container manually with:
 | `PGID`            | `100`        | Group ID the app runs as.                                                   |
 | `UMASK`           | `022`        | Umask applied to newly created files/folders.                               |
 | `IMAGLR_MAX_PAGES`| `500`        | Safety cap on pages enumerated per imaglr profile/page/tag/RSS listing.     |
+| `PROXY_TEST_URL`  | `https://www.google.com/generate_204` | Default health-check URL for the proxy pool (Settings -> Proxies). Override for air-gapped/LAN-only setups; per-proxy overrides live in Settings, not the environment. |
 
 ## Volumes
 
@@ -149,6 +150,55 @@ Unraid, or `./config/cookies.txt` with the Compose setup) and restart the
 container, or just wait -- it's picked up per-job either way.
 
 Treat any cookies file as a credential -- don't commit it or share it.
+
+## Proxies
+
+Some sites gate content by geography or age in a way that looks like a broken
+download but isn't. The motivating case: XVideos returns HTTP 200 with a page
+that says `"vpnWarn":"A new Australian law requires age verification"` and
+carries no actual video sources, so yt-dlp reports **"No video formats
+found"** even though it did nothing wrong -- an Australian exit IP is simply
+not allowed to see the video. Routing that request through a proxy with a
+different exit country fixes it.
+
+The Settings tab -> **Proxies** card manages a small pool of proxies for
+exactly this:
+
+- **Add a proxy** -- paste an `http://`, `https://`, `socks4://`, `socks5://`
+  or `socks5h://` URL (embedded credentials are fine, e.g.
+  `http://user:pass@10.0.0.5:8888`) with an optional label, and click **Test**
+  before saving to confirm it's reachable. A LAN container such as
+  [gluetun](https://github.com/qdm12/gluetun) works well here -- point at its
+  HTTP proxy port (`http://<gluetun-ip>:8888`) or its SOCKS5 port
+  (`socks5://<gluetun-ip>:1080`).
+- **Health checks** run automatically -- on startup, whenever you save the
+  proxy settings, on a timer (default every 5 minutes, configurable), and on
+  demand with **Re-check all**. A proxy fetches the configured health-check
+  URL (`https://www.google.com/generate_204` by default, or `PROXY_TEST_URL`)
+  through itself; only proxies that answer within the timeout are considered
+  live. The table shows each proxy's status dot, latency, and (best-effort)
+  exit IP, with the last error available on hover.
+- **Round-robin** -- when more than one proxy is live, downloads that need a
+  proxy are spread across them in turn rather than hammering just one.
+- **Which downloads use a proxy** -- two modes:
+  - **Only for these domains** (default): list domains (one per line, e.g.
+    `xvideos.com`) that must go through the pool; everything else downloads
+    direct. A domain also matches its subdomains and a `www.` prefix.
+  - **All downloads**: every job is routed through a live proxy.
+- **Retry on failure** -- if a proxied download errors partway through and
+  another live proxy is available, the job automatically retries once on that
+  other proxy before failing for real.
+- If a domain requires a proxy (per the rule above) and none are live, the
+  job fails immediately with a clear "No live proxy for `<host>`" error
+  instead of silently downloading direct and hitting the same gate again.
+- Credentials in a proxy URL are masked (`user:***@host`) everywhere the API
+  and UI show it back to you; the real URL is only ever stored in
+  `/config/settings.json`; saving the form back as shown (with the mask
+  intact) does not overwrite the real credentials.
+
+The header pill (`proxies 2/3 live`) is hidden until at least one proxy is
+configured, and turns red when none of the configured proxies are currently
+live.
 
 ## Updating yt-dlp
 
@@ -207,3 +257,13 @@ drawer -- it records the exact yt-dlp error for that item.
 **Path traversal / "invalid folder" errors when picking a subfolder.**
 Intentional -- the app resolves subfolder paths and rejects anything that
 would resolve outside `DOWNLOADS_ROOT` (e.g. `../../etc`).
+
+**"No video formats found" on XVideos (or other adult sites), especially from
+an Australian IP.** This is an age/geo gate, not a yt-dlp bug -- the page
+loads (HTTP 200) but the site deliberately serves no video sources to that
+IP, e.g. XVideos' Australian age-verification requirement. Add a proxy with a
+non-Australian exit IP in Settings -> Proxies, put the site's domain (e.g.
+`xvideos.com`) in the domains list, save, and retry the download -- see the
+[Proxies](#proxies) section above. If the job now fails fast with "No live
+proxy for `<host>`", none of the configured proxies are currently live; check
+their status in the Proxies card.

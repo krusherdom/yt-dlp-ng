@@ -50,6 +50,14 @@ DB_PATH: Path = CONFIG_DIR / "jobs.db"
 LOG_DIR: Path = CONFIG_DIR / "logs"
 COOKIES_FILE: Path = CONFIG_DIR / "cookies.txt"
 ARCHIVE_FILE: Path = CONFIG_DIR / "archive.txt"
+#: Persisted app settings (proxy pool etc.). Written atomically by app.settings.
+SETTINGS_FILE: Path = CONFIG_DIR / "settings.json"
+
+# Default URL fetched through a proxy to decide whether it is alive. A 204
+# endpoint keeps the check cheap; override for air-gapped/LAN-only setups.
+PROXY_TEST_URL: str = (
+    os.environ.get("PROXY_TEST_URL") or "https://www.google.com/generate_204"
+).strip()
 
 # Repo root -> static/ lives next to app/. Resolved from __file__, never cwd.
 BASE_DIR: Path = Path(__file__).resolve().parent.parent

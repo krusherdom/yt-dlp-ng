@@ -26,6 +26,7 @@
   <div class="topbar-meta">
     <span class="pill" id="version-pill" title="yt-dlp version">yt-dlp&nbsp;—</span>
     <span class="pill pill-muted" id="cookies-pill" title="Cookies file detection">cookies&nbsp;—</span>
+    <span class="pill pill-muted" id="proxy-pill" title="Proxy pool health" hidden>proxies&nbsp;—</span>
     <span class="conn" id="conn" title="WebSocket connection">
       <span class="dot" id="conn-dot"></span><span class="conn-text" id="conn-text">connecting</span>
     </span>
@@ -183,6 +184,55 @@
         <button type="button" class="btn btn-primary" id="ck-upload-btn">Upload</button>
       </div>
     </div>
+
+    <div class="card">
+      <h2 class="card-title">Proxies</h2>
+      <p class="muted small">
+        Route downloads through a proxy to get around geo/age gates -- e.g. an
+        Australian exit IP makes XVideos return "No video formats found" even
+        though the page loads fine. Proxies are health-checked automatically;
+        only live ones are used, round-robin across however many are up.
+      </p>
+
+      <div class="proxy-table" id="proxy-table"></div>
+      <p class="empty" id="proxy-empty">No proxies configured yet -- add one below.</p>
+
+      <label class="field-label" for="proxy-new-url">Add a proxy</label>
+      <div class="addbar-row">
+        <input type="text" id="proxy-new-url" class="grow mono" autocomplete="off" spellcheck="false"
+               placeholder="http://user:pass@10.0.0.5:8888 or socks5://10.0.0.5:1080">
+        <input type="text" id="proxy-new-label" class="proxy-label-input" autocomplete="off"
+               placeholder="Label (optional)">
+        <button type="button" class="btn btn-ghost" id="proxy-new-test">Test</button>
+        <button type="button" class="btn btn-primary" id="proxy-new-add">Add</button>
+      </div>
+      <p class="muted small" id="proxy-new-result"></p>
+
+      <label class="field-label">Which downloads use a proxy</label>
+      <div class="proxy-mode" id="proxy-mode" role="radiogroup" aria-label="Proxy mode">
+        <label class="checkline"><input type="radio" name="proxy-mode" value="domains"> Only for these domains</label>
+        <label class="checkline"><input type="radio" name="proxy-mode" value="all"> All downloads</label>
+      </div>
+      <div id="proxy-domains-wrap">
+        <label class="field-label" for="proxy-domains">Domains (one per line, matches subdomains too)</label>
+        <textarea id="proxy-domains" rows="3" spellcheck="false" placeholder="xvideos.com"></textarea>
+      </div>
+
+      <details class="proxy-advanced">
+        <summary>Advanced</summary>
+        <label class="field-label" for="proxy-test-url">Health check URL</label>
+        <input type="text" id="proxy-test-url" class="mono" autocomplete="off" spellcheck="false">
+        <label class="field-label" for="proxy-check-interval">Check interval (seconds)</label>
+        <input type="text" id="proxy-check-interval" inputmode="numeric" autocomplete="off">
+        <label class="field-label" for="proxy-timeout">Timeout (seconds)</label>
+        <input type="text" id="proxy-timeout" inputmode="numeric" autocomplete="off">
+      </details>
+
+      <div class="row-end">
+        <button type="button" class="btn btn-ghost btn-sm" id="proxy-recheck-btn">Re-check all</button>
+        <button type="button" class="btn btn-primary" id="proxy-save-btn">Save</button>
+      </div>
+    </div>
   </section>
 
 </main>
@@ -221,6 +271,7 @@
         <div class="job-sub">
           <span class="tag job-preset"></span>
           <span class="tag job-folder"></span>
+          <span class="tag job-proxy" hidden></span>
           <span class="muted job-file"></span>
         </div>
       </div>
@@ -254,6 +305,24 @@
 
 <template id="tpl-folder-row">
   <button type="button" class="folder-row"><span class="ico" aria-hidden="true">🗀</span><span class="folder-name"></span></button>
+</template>
+
+<template id="tpl-proxy-row">
+  <div class="proxy-row">
+    <span class="dot proxy-dot" aria-hidden="true"></span>
+    <div class="proxy-body">
+      <div class="proxy-label"></div>
+      <div class="proxy-url mono wrap"></div>
+      <div class="proxy-meta muted small"></div>
+    </div>
+    <label class="checkline proxy-enabled-label">
+      <input type="checkbox" class="proxy-enabled"> on
+    </label>
+    <div class="proxy-actions">
+      <button type="button" class="btn btn-ghost btn-sm" data-act="test">Test</button>
+      <button type="button" class="btn btn-ghost btn-sm danger" data-act="remove">Remove</button>
+    </div>
+  </div>
 </template>
 
 <script>
