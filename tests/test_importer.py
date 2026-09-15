@@ -87,34 +87,45 @@ def test_match_extractor_rejects_generic_pages():
 
 
 def test_validate_urls_splits_valid_and_rejected():
+    # allow_generic=False keeps the old "known sites only" behaviour.
     candidates, rejected = importer.validate_urls(
         [
             "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
             "https://example.invalid/some/random/page.html",
             "https://vimeo.com/123456789",
-        ]
+        ],
+        allow_generic=False,
     )
     assert [c["url"] for c in candidates] == [
         "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
         "https://vimeo.com/123456789",
     ]
     assert all(c["extractor"] for c in candidates)
-    assert rejected == ["https://example.invalid/some/random/page.html"]
+    assert all(c["kind"] == "site" for c in candidates)
+    assert rejected == [
+        {
+            "url": "https://example.invalid/some/random/page.html",
+            "reason": importer.REASON_NO_GENERIC,
+        }
+    ]
 
 
 def test_import_payload_mixed_text():
-    result = importer.import_payload(VALID_TEXT)
+    result = importer.import_payload(VALID_TEXT, allow_generic=False)
     assert result["total_found"] >= 4
+    assert result["allow_generic"] is False
     urls = [c["url"] for c in result["candidates"]]
     assert "https://www.youtube.com/watch?v=dQw4w9WgXcQ" in urls
-    assert "https://example.invalid/some/random/page.html" in result["rejected"]
+    assert "https://example.invalid/some/random/page.html" in [
+        r["url"] for r in result["rejected"]
+    ]
 
 
 def test_import_payload_html_file():
-    result = importer.import_payload(BOOKMARKS_HTML)
+    result = importer.import_payload(BOOKMARKS_HTML, allow_generic=False)
     urls = [c["url"] for c in result["candidates"]]
     assert "https://www.youtube.com/watch?v=abcdefghijk" in urls
-    assert "https://news.ycombinator.com/" in result["rejected"]
+    assert "https://news.ycombinator.com/" in [r["url"] for r in result["rejected"]]
 
 
 def test_looks_like_html_detection():

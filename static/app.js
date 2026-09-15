@@ -43,7 +43,9 @@ window.__YTDLP_APP_LOADED = true;
     filter:    'all',
     folder:    '',         // Queue tab destination, '' == downloads root
     importFolder: '',      // Import tab destination
-    candidates: [],        // [{url, extractor}]
+    candidates: [],        // [{url, extractor, kind}]
+    rejected:   [],        // [{url, reason}]
+    candFilters: { site: true, direct: true, generic: true },
     status:    null,
     logLines:  0
   };
@@ -184,6 +186,7 @@ window.__YTDLP_APP_LOADED = true;
     $$('.tabpanel').forEach((p) => { p.hidden = p.id !== 'tab-' + name; });
     if (name === 'settings') {
       loadStatus();
+      loadGeneralSettings();
       // Refresh the proxy list/settings from the server too, but never while
       // the user has unsaved edits in progress (another tab may have saved).
       if (!proxyDirty) loadProxies();
@@ -495,26 +498,31 @@ window.__YTDLP_APP_LOADED = true;
   async function addJob() {
     const url = els.url.value.trim();
     if (!url) { toast('Enter a URL first', 'error'); els.url.focus(); return; }
+    const referer = els.queueReferer.value.trim();
 
     // Convenience: a multi-line paste goes through the bulk endpoint.
     const urls = url.split(/\s+/).filter(Boolean);
     els.addBtn.disabled = true;
     try {
       if (urls.length > 1) {
-        const res = await apiJSON('/api/jobs/bulk', 'POST', {
+        const body = {
           urls: urls,
           preset: els.preset.value,
           subfolder: state.folder,
           extra_args: els.extraArgs.value.trim()
-        });
+        };
+        if (referer) body.referer = referer;
+        const res = await apiJSON('/api/jobs/bulk', 'POST', body);
         toast('Queued ' + queuedCount(res, urls.length) + ' jobs', 'ok');
       } else {
-        await apiJSON('/api/jobs', 'POST', {
+        const body = {
           url: urls[0],
           preset: els.preset.value,
           subfolder: state.folder,
           extra_args: els.extraArgs.value.trim()
-        });
+        };
+        if (referer) body.referer = referer;
+        await apiJSON('/api/jobs', 'POST', body);
         toast('Queued', 'ok');
       }
       els.url.value = '';
@@ -663,19 +671,26 @@ window.__YTDLP_APP_LOADED = true;
   async function scanImport() {
     const file = els.importFile.files && els.importFile.files[0];
     const text = els.importText.value.trim();
+    const baseUrl = els.importBaseUrl.value.trim();
     if (!file && !text) { toast('Paste some links or pick an HTML file', 'error'); return; }
 
     // multipart/form-data — do NOT set Content-Type, the browser adds the boundary.
     const fd = new FormData();
     if (file) fd.append('file', file, file.name);
     else fd.append('text', text);
+    if (baseUrl) fd.append('base_url', baseUrl);
 
     els.scanBtn.disabled = true;
     try {
       const data = await api('/api/import', { method: 'POST', body: fd });
       state.candidates = Array.isArray(data.candidates) ? data.candidates : [];
-      const rejected = Array.isArray(data.rejected) ? data.rejected.length : 0;
-      renderCandidates(rejected);
+      state.rejected = Array.isArray(data.rejected) ? data.rejected : [];
+      renderCandidates();
+      renderRejected();
+      updateGenericHint(data.allow_generic);
+      setText(els.importSummary,
+        state.candidates.length + ' supported link' + (state.candidates.length === 1 ? '' : 's') +
+        (state.rejected.length ? '  ·  ' + state.rejected.length + ' rejected' : ''));
       els.importResults.hidden = false;
       if (!state.candidates.length) toast('No supported URLs found', 'error');
     } catch (e) {
@@ -685,24 +700,85 @@ window.__YTDLP_APP_LOADED = true;
     }
   }
 
-  function renderCandidates(rejectedCount) {
+  /** Candidate kind -> the label/class shown on its badge. */
+  function candKind(c) {
+    return c && (c.kind === 'direct' || c.kind === 'generic') ? c.kind : 'site';
+  }
+
+  function renderCandidates() {
     const box = els.candidates;
     box.textContent = '';
     for (const c of state.candidates) {
       const row = tpl('tpl-candidate');
+      const kind = candKind(c);
+      row.dataset.kind = kind;
       $('.cand-url', row).textContent = c.url || '';            // untrusted
-      $('.cand-extractor', row).textContent = c.extractor || '?';
+      const kindTag = $('.cand-kind', row);
+      const noteEl = $('.cand-note', row);
+      if (kind === 'direct') {
+        kindTag.className = 'tag cand-kind tag-direct';
+        setText(kindTag, 'direct media');
+        noteEl.hidden = true;
+      } else if (kind === 'generic') {
+        kindTag.className = 'tag cand-kind tag-generic';
+        setText(kindTag, 'generic');
+        noteEl.hidden = false;
+        setText(noteEl, 'unknown site — page scraper, best effort');
+      } else {
+        kindTag.className = 'tag cand-kind';
+        setText(kindTag, c.extractor || '?');
+        noteEl.hidden = true;
+      }
       row.querySelector('input').dataset.url = c.url || '';
       box.appendChild(row);
     }
-    setText(els.importSummary,
-      state.candidates.length + ' supported link' + (state.candidates.length === 1 ? '' : 's') +
-      (rejectedCount ? '  ·  ' + rejectedCount + ' rejected' : ''));
+    applyCandFilters();
+  }
+
+  /** Show/hide candidate rows per the Sites/Direct/Generic checkboxes above the list. */
+  function applyCandFilters() {
+    $$('.candidate', els.candidates).forEach((row) => {
+      row.hidden = state.candFilters[row.dataset.kind] === false;
+    });
     updateSelectedCount();
   }
 
+  /** Unchecking a kind filter also deselects (and hides) its rows. */
+  function onCandFilterChange(kind, checked) {
+    state.candFilters[kind] = checked;
+    if (!checked) {
+      $$('.candidate', els.candidates).forEach((row) => {
+        if (row.dataset.kind === kind) row.querySelector('input[type="checkbox"]').checked = false;
+      });
+    }
+    applyCandFilters();
+  }
+
+  function renderRejected() {
+    const list = state.rejected;
+    const n = list.length;
+    els.rejectedBox.hidden = n === 0;
+    setText(els.rejectedSummary, n + ' rejected');
+    els.rejectedList.textContent = '';
+    for (const r of list) {
+      const row = tpl('tpl-rejected-row');
+      setText($('.rej-url', row), (r && r.url) || '');
+      setText($('.rej-reason', row), (r && r.reason) || '');
+      els.rejectedList.appendChild(row);
+    }
+  }
+
+  /** Hint pointing at Settings when generic extraction is off and something was skipped for it. */
+  function updateGenericHint(allowGeneric) {
+    const disabledSomething = state.rejected.some((r) =>
+      r && typeof r.reason === 'string' && r.reason.toLowerCase().indexOf('generic extraction disabled') !== -1);
+    els.genericHint.hidden = !(allowGeneric === false && disabledSomething);
+  }
+
   function selectedUrls() {
-    return $$('input[type="checkbox"]', els.candidates)
+    return $$('.candidate', els.candidates)
+      .filter((row) => !row.hidden)
+      .map((row) => row.querySelector('input[type="checkbox"]'))
       .filter((cb) => cb.checked)
       .map((cb) => cb.dataset.url)
       .filter(Boolean);
@@ -717,13 +793,16 @@ window.__YTDLP_APP_LOADED = true;
   async function addSelected() {
     const urls = selectedUrls();
     if (!urls.length) return;
+    const referer = els.importBaseUrl.value.trim();
     els.importAddBtn.disabled = true;
     try {
-      const res = await apiJSON('/api/jobs/bulk', 'POST', {
+      const body = {
         urls: urls,
         preset: els.importPreset.value,
         subfolder: state.importFolder
-      });
+      };
+      if (referer) body.referer = referer;
+      const res = await apiJSON('/api/jobs/bulk', 'POST', body);
       toast('Queued ' + queuedCount(res, urls.length) + ' jobs', 'ok');
       resetImport();
       showTab('queue');
@@ -736,10 +815,20 @@ window.__YTDLP_APP_LOADED = true;
 
   function resetImport() {
     state.candidates = [];
+    state.rejected = [];
+    state.candFilters = { site: true, direct: true, generic: true };
     els.candidates.textContent = '';
     els.importResults.hidden = true;
     els.importText.value = '';
     els.importFile.value = '';
+    els.importBaseUrl.value = '';
+    els.rejectedList.textContent = '';
+    els.rejectedBox.hidden = true;
+    els.rejectedBox.open = false;
+    els.genericHint.hidden = true;
+    els.filterSite.checked = true;
+    els.filterDirect.checked = true;
+    els.filterGeneric.checked = true;
   }
 
   // ───────────────────────────── global log ─────────────────────────────
@@ -853,6 +942,35 @@ window.__YTDLP_APP_LOADED = true;
       applyStatus(await api('/api/status'));
     } catch (e) {
       toast('Could not load status: ' + e.message, 'error');
+    }
+  }
+
+  // ───────────────────────── general settings ───────────────────────────
+
+  async function loadGeneralSettings() {
+    try {
+      const data = await api('/api/settings/general');
+      els.genAllowGeneric.checked = !!data.allow_generic;
+      els.genReferer.value = data.default_referer || '';
+    } catch (e) {
+      toast('Could not load general settings: ' + e.message, 'error');
+    }
+  }
+
+  async function saveGeneralSettings() {
+    els.genSaveBtn.disabled = true;
+    try {
+      const data = await apiJSON('/api/settings/general', 'PUT', {
+        allow_generic: els.genAllowGeneric.checked,
+        default_referer: els.genReferer.value.trim()
+      });
+      els.genAllowGeneric.checked = !!data.allow_generic;
+      els.genReferer.value = data.default_referer || '';
+      toast('General settings saved', 'ok');
+    } catch (e) {
+      toast('Save failed: ' + e.message, 'error');
+    } finally {
+      els.genSaveBtn.disabled = false;
     }
   }
 
@@ -1326,6 +1444,7 @@ window.__YTDLP_APP_LOADED = true;
     els.extraArgs      = $('#extra-args');
     els.extraWrap      = $('#extra-wrap');
     els.extraToggle    = $('#extra-toggle');
+    els.queueReferer   = $('#queue-referer');
     els.addBtn         = $('#add-btn');
     els.folderBtn      = $('#folder-btn');
     els.folderLabel    = $('#folder-label');
@@ -1338,11 +1457,21 @@ window.__YTDLP_APP_LOADED = true;
 
     els.importText     = $('#import-text');
     els.importFile     = $('#import-file');
+    els.importBaseUrl  = $('#import-base-url');
     els.scanBtn        = $('#scan-btn');
     els.importReset    = $('#import-reset');
     els.importResults  = $('#import-results');
     els.importSummary  = $('#import-summary');
+    els.candFilters    = $('#cand-filters');
+    els.filterSite     = $('#filter-site');
+    els.filterDirect   = $('#filter-direct');
+    els.filterGeneric  = $('#filter-generic');
     els.candidates     = $('#candidates');
+    els.rejectedBox     = $('#rejected-box');
+    els.rejectedSummary = $('#rejected-summary');
+    els.rejectedList    = $('#rejected-list');
+    els.genericHint     = $('#generic-hint');
+    els.genericHintBtn  = $('#generic-hint-btn');
     els.importPreset   = $('#import-preset');
     els.importFolderBtn   = $('#import-folder-btn');
     els.importFolderLabel = $('#import-folder-label');
@@ -1354,6 +1483,10 @@ window.__YTDLP_APP_LOADED = true;
     els.autoscroll     = $('#autoscroll');
     els.clearLog       = $('#clear-log');
     els.logCount       = $('#log-count');
+
+    els.genAllowGeneric = $('#gen-allow-generic');
+    els.genReferer       = $('#gen-referer');
+    els.genSaveBtn       = $('#gen-save-btn');
 
     els.stVersion      = $('#st-version');
     els.stCookies      = $('#st-cookies');
@@ -1433,7 +1566,8 @@ window.__YTDLP_APP_LOADED = true;
     els.importReset.addEventListener('click', resetImport);
     els.candidates.addEventListener('change', updateSelectedCount);
     els.selAll.addEventListener('click', () => {
-      $$('input[type="checkbox"]', els.candidates).forEach((cb) => { cb.checked = true; });
+      $$('.candidate', els.candidates).filter((row) => !row.hidden)
+        .forEach((row) => { row.querySelector('input[type="checkbox"]').checked = true; });
       updateSelectedCount();
     });
     els.selNone.addEventListener('click', () => {
@@ -1443,11 +1577,16 @@ window.__YTDLP_APP_LOADED = true;
     els.importAddBtn.addEventListener('click', addSelected);
     els.importFolderBtn.addEventListener('click', () =>
       openFolderPicker(state.importFolder, setImportFolder));
+    els.filterSite.addEventListener('change', (e) => onCandFilterChange('site', e.target.checked));
+    els.filterDirect.addEventListener('change', (e) => onCandFilterChange('direct', e.target.checked));
+    els.filterGeneric.addEventListener('change', (e) => onCandFilterChange('generic', e.target.checked));
+    els.genericHintBtn.addEventListener('click', () => showTab('settings'));
 
     // logs
     els.clearLog.addEventListener('click', clearGlobalLog);
 
     // settings
+    els.genSaveBtn.addEventListener('click', saveGeneralSettings);
     els.updateBtn.addEventListener('click', updateYtdlp);
     els.ckUploadBtn.addEventListener('click', uploadCookies);
     els.ckDeleteBtn.addEventListener('click', onDeleteCookiesClick);
@@ -1500,6 +1639,7 @@ window.__YTDLP_APP_LOADED = true;
     updateSelectedCount();
 
     loadStatus();
+    loadGeneralSettings();
     syncPresets();
     seedGlobalLog();
     loadProxies();

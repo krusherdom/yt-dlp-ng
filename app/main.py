@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -30,7 +31,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
 from . import config, db, importer, paths, proxies, settings, worker, ytdl
-from .models import BulkJobCreate, FolderCreate, JobCreate, ProxySettings
+from .models import (
+    BulkJobCreate,
+    FolderCreate,
+    GeneralSettings,
+    JobCreate,
+    ProxySettings,
+)
 
 
 @asynccontextmanager
@@ -64,7 +71,7 @@ async def lifespan(app: FastAPI):
         await db.close_db()
 
 
-app = FastAPI(title="yt-dlp-ng", version="0.3.2", lifespan=lifespan)
+app = FastAPI(title="yt-dlp-ng", version="0.4.0", lifespan=lifespan)
 
 
 # --------------------------------------------------------------------------
@@ -127,6 +134,7 @@ def status_payload() -> Dict[str, Any]:
         "resume_on_start": config.RESUME_ON_START,
         "presets": ytdl.PRESET_NAMES,
         "proxies": proxies.summary(),
+        "allow_generic": bool(settings.get_general().allow_generic),
     }
 
 
@@ -168,6 +176,34 @@ def _validate_extra_args(extra_args: Optional[str]) -> str:
     return text
 
 
+def _with_referer(extra_args: str, referer: Optional[str]) -> str:
+    """Fold a Referer header into the job's extra-args string.
+
+    There is no ``referer`` column: yt-dlp already exposes the header as
+    ``--referer``, and ``parse_extra_args`` maps it onto ``http_headers``, so
+    the option string is the whole storage mechanism. An explicit ``--referer``
+    the user typed always wins, and the configured default only applies when
+    the request did not carry one.
+    """
+    value = (referer or "").strip()
+    if not value:
+        value = (settings.get_general().default_referer or "").strip()
+    if not value:
+        return extra_args
+    if not value.lower().startswith(("http://", "https://")):
+        raise HTTPException(
+            status_code=400, detail="Referer must start with http:// or https://"
+        )
+    try:
+        argv = shlex.split(extra_args) if extra_args else []
+    except ValueError:
+        argv = []
+    if any(a == "--referer" or a.startswith("--referer=") for a in argv):
+        return extra_args
+    flag = f"--referer {shlex.quote(value)}"
+    return f"{extra_args} {flag}" if extra_args else flag
+
+
 def _validate_url(url: Optional[str]) -> str:
     value = (url or "").strip()
     if not value:
@@ -180,7 +216,7 @@ def _validate_url(url: Optional[str]) -> str:
 @app.post("/api/jobs/bulk", status_code=201)
 async def create_jobs_bulk(payload: BulkJobCreate) -> Dict[str, Any]:
     preset = _validate_preset(payload.preset)
-    extra_args = _validate_extra_args(payload.extra_args)
+    extra_args = _with_referer(_validate_extra_args(payload.extra_args), payload.referer)
     target = paths.safe_resolve(payload.subfolder or "")
     subfolder = paths.relative_to_root(target)
 
@@ -219,7 +255,7 @@ async def create_jobs_bulk(payload: BulkJobCreate) -> Dict[str, Any]:
 async def create_job(payload: JobCreate) -> Dict[str, Any]:
     url = _validate_url(payload.url)
     preset = _validate_preset(payload.preset)
-    extra_args = _validate_extra_args(payload.extra_args)
+    extra_args = _with_referer(_validate_extra_args(payload.extra_args), payload.referer)
     target = paths.safe_resolve(payload.subfolder or "")
     subfolder = paths.relative_to_root(target)
 
@@ -292,9 +328,11 @@ async def global_logs() -> Dict[str, Any]:
 async def import_links(
     request: Request,
     text: Optional[str] = Form(None),
+    base_url: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
 ) -> Dict[str, Any]:
     payload = ""
+    base = (base_url or "").strip()
     if file is not None:
         raw = await file.read()
         payload = raw.decode("utf-8", errors="replace")
@@ -309,10 +347,18 @@ async def import_links(
                 body = None
             if isinstance(body, dict):
                 payload = str(body.get("text") or "")
+                base = base or str(body.get("base_url") or "").strip()
 
     if not payload.strip():
         raise HTTPException(status_code=400, detail="Provide text or an HTML file")
-    return await asyncio.to_thread(importer.import_payload, payload)
+    if base and not base.lower().startswith(("http://", "https://")):
+        raise HTTPException(
+            status_code=400, detail="base_url must start with http:// or https://"
+        )
+    allow_generic = bool(settings.get_general().allow_generic)
+    return await asyncio.to_thread(
+        importer.import_payload, payload, base or None, allow_generic
+    )
 
 
 # --------------------------------------------------------------------------
@@ -619,6 +665,29 @@ async def check_proxies_now() -> Dict[str, Any]:
         "statuses": [s.model_dump() for s in result],
         "summary": proxies.summary(),
     }
+
+
+# --------------------------------------------------------------------------
+# General settings (stored alongside the proxy pool in settings.json)
+# --------------------------------------------------------------------------
+
+
+@app.get("/api/settings/general")
+async def get_general_settings() -> Dict[str, Any]:
+    return settings.public_general()
+
+
+@app.put("/api/settings/general")
+async def put_general_settings(payload: GeneralSettings) -> Dict[str, Any]:
+    try:
+        saved = await settings.save_general(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    # allow_generic is part of status_payload(), so open tabs repaint.
+    await _broadcast_status()
+    return saved.model_dump()
 
 
 # --------------------------------------------------------------------------

@@ -64,7 +64,11 @@ def test_build_opts_core_fields(tmp_path):
     # Single-URL jobs never use the archive; only playlist children opt in.
     assert "download_archive" not in opts
     opts = ytdl.build_opts(preset="720p", target_dir=target, use_archive=True)
-    assert opts["download_archive"] == str(config.ARCHIVE_FILE)
+    assert opts["download_archive"] == str(ytdl.archive_path_for(target))
+    assert opts["download_archive"].endswith(".txt")
+    other = tmp_path / "other"
+    other.mkdir()
+    assert ytdl.archive_path_for(other) != ytdl.archive_path_for(target)
 
 
 def test_build_opts_cookiefile_only_when_present(tmp_path, monkeypatch):

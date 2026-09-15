@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.4.0 - 2026-09-15
+### Added
+- Generic extraction toggle (Settings -> General): lets unknown sites fall
+  through to yt-dlp's generic page scraper, or turns that off entirely.
+- Import tab now picks up direct media links (mp4/m3u8/...) and generic page
+  scraping alongside known-site links, with a kind badge per candidate and
+  filter checkboxes (Sites / Direct media / Generic pages).
+- Referer support: a per-site default in Settings, a "Page URL" field on the
+  Import tab, and an advanced Referer field on the Queue add bar; sent with
+  the download so Referer-gated direct links work.
+- Rejected import candidates now show their reason (including when generic
+  extraction is disabled) in a collapsible list instead of just a count.
+
 ## v0.3.2 - 2026-09-15
 ### Fixed
 - Browser impersonation now works: the image installs `yt-dlp[curl-cffi]`, removing the "attempting impersonation, but no impersonate target is available" warning on sites that fingerprint TLS. The in-app updater and `UPDATE_ON_START` keep the extra installed.

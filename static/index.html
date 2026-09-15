@@ -12,8 +12,8 @@
     from "/" while the assets live under "/static/".
   -->
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%233b82f6%27/%3E%3Cpath d=%27M12 9v14l11-7z%27 fill=%27white%27/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="style.css">
-  <script defer src="app.js"></script>
+  <link rel="stylesheet" href="style.css?v=0.4.0">
+  <script defer src="app.js?v=0.4.0"></script>
 </head>
 <body>
 
@@ -70,6 +70,9 @@
         <label class="field-label" for="extra-args">Extra yt-dlp arguments (advanced)</label>
         <input type="text" id="extra-args" placeholder="--write-subs --sub-langs en"
                autocomplete="off" spellcheck="false">
+        <label class="field-label" for="queue-referer">Referer (optional)</label>
+        <input type="url" id="queue-referer" placeholder="https://example.com/"
+               autocomplete="off" spellcheck="false">
       </div>
     </div>
 
@@ -93,12 +96,20 @@
   <!-- ─────────────────────────── Import tab ────────────────────────── -->
   <section id="tab-import" class="tabpanel" role="tabpanel" hidden>
     <div class="card">
+      <p class="muted small">
+        Paste links, or drop a saved HTML page. Known sites, direct media
+        files (mp4/m3u8/...) and unknown pages are all picked up.
+      </p>
       <label class="field-label" for="import-text">Paste links (any text — URLs are extracted)</label>
       <textarea id="import-text" rows="6" spellcheck="false"
                 placeholder="https://…&#10;https://…"></textarea>
 
       <label class="field-label" for="import-file">…or upload a saved HTML page / bookmarks file</label>
       <input type="file" id="import-file" accept=".html,.htm,text/html">
+
+      <label class="field-label" for="import-base-url">Page URL (for relative links / Referer)</label>
+      <input type="url" id="import-base-url" placeholder="https://example.com/page (optional)"
+             autocomplete="off" spellcheck="false">
 
       <div class="row-end">
         <button type="button" class="btn btn-ghost btn-sm" id="import-reset">Reset</button>
@@ -114,7 +125,24 @@
           <button type="button" class="btn btn-ghost btn-sm" id="sel-none">None</button>
         </div>
       </div>
+
+      <div class="cand-filters" id="cand-filters" role="group" aria-label="Filter candidates by kind">
+        <label class="checkline"><input type="checkbox" id="filter-site" checked> Sites</label>
+        <label class="checkline"><input type="checkbox" id="filter-direct" checked> Direct media</label>
+        <label class="checkline"><input type="checkbox" id="filter-generic" checked> Generic pages</label>
+      </div>
+
       <div id="candidates" class="candidates"></div>
+
+      <details class="rejected-box" id="rejected-box" hidden>
+        <summary id="rejected-summary">0 rejected</summary>
+        <div id="rejected-list" class="rejected-list"></div>
+      </details>
+
+      <p class="hint-box" id="generic-hint" hidden>
+        Generic extraction is turned off, so some pages were skipped.
+        <button type="button" class="btn btn-ghost btn-sm" id="generic-hint-btn">Enable in Settings</button>
+      </p>
 
       <div class="addbar-row import-add">
         <select id="import-preset" class="preset" title="Quality preset">
@@ -147,6 +175,24 @@
 
   <!-- ────────────────────────── Settings tab ───────────────────────── -->
   <section id="tab-settings" class="tabpanel" role="tabpanel" hidden>
+    <div class="card">
+      <h2 class="card-title">General</h2>
+      <label class="checkline">
+        <input type="checkbox" id="gen-allow-generic">
+        Allow generic extraction (try unknown sites with yt-dlp's page scraper)
+      </label>
+      <label class="field-label" for="gen-referer">Default Referer (optional)</label>
+      <input type="url" id="gen-referer" placeholder="https://example.com/"
+             autocomplete="off" spellcheck="false">
+      <p class="muted small">
+        Sent with every download unless a job sets its own; useful for direct
+        media links copied from a site that checks where requests come from.
+      </p>
+      <div class="row-end">
+        <button type="button" class="btn btn-primary" id="gen-save-btn">Save</button>
+      </div>
+    </div>
+
     <div class="card">
       <h2 class="card-title">Status</h2>
       <dl class="kv">
@@ -305,9 +351,17 @@
     <input type="checkbox" checked>
     <span class="cand-body">
       <span class="cand-url mono"></span>
-      <span class="tag cand-extractor"></span>
+      <span class="tag cand-kind"></span>
+      <span class="muted small cand-note" hidden></span>
     </span>
   </label>
+</template>
+
+<template id="tpl-rejected-row">
+  <div class="rejected-row">
+    <span class="rej-url mono wrap"></span>
+    <span class="rej-reason"></span>
+  </div>
 </template>
 
 <template id="tpl-folder-row">

@@ -794,9 +794,21 @@ def test_importer_validates_imaglr_payload():
     result = importer.import_payload(
         "https://imaglr.com/post/90040737\n"
         "https://imaglr.com/p/art\n"
-        "https://example.invalid/nope\n"
+        "https://example.invalid/nope\n",
+        allow_generic=False,
     )
     extractors = {c["url"]: c["extractor"] for c in result["candidates"]}
     assert extractors["https://imaglr.com/post/90040737"] == "imaglr:post"
     assert extractors["https://imaglr.com/p/art"] == "imaglr:page"
-    assert result["rejected"] == ["https://example.invalid/nope"]
+    assert result["rejected"] == [
+        {"url": "https://example.invalid/nope", "reason": "generic extraction disabled"}
+    ]
+
+
+def test_importer_classifies_imaglr_as_site():
+    from app import importer
+
+    result = importer.import_payload(
+        "https://imaglr.com/post/90040737\n", allow_generic=True
+    )
+    assert result["candidates"][0]["kind"] == "site"

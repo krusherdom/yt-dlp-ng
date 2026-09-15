@@ -409,7 +409,8 @@ def test_settings_save_load_round_trip(tmp_path, monkeypatch):
 
     assert path.is_file()
     on_disk = json.loads(path.read_text(encoding="utf-8"))
-    assert on_disk["proxies"][0]["url"] == "http://bob:pw@a.lan:8888"
+    # v0.4.0 envelope: {"proxies": {...ProxySettings...}, "general": {...}}.
+    assert on_disk["proxies"]["proxies"][0]["url"] == "http://bob:pw@a.lan:8888"
 
     settings.reset_cache()
     loaded = asyncio.run(settings.load())
@@ -450,7 +451,8 @@ def test_save_keeps_credentials_when_ui_returns_the_mask(tmp_path, monkeypatch):
 
     saved = asyncio.run(settings.save(echoed))
     assert saved.proxies[0].url == original
-    assert json.loads(path.read_text(encoding="utf-8"))["proxies"][0]["url"] == original
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk["proxies"]["proxies"][0]["url"] == original
 
 
 def test_save_updates_statuses_and_cache(tmp_path, monkeypatch):

@@ -22,6 +22,9 @@ class JobCreate(BaseModel):
     preset: str = "best"
     subfolder: Optional[str] = ""
     extra_args: Optional[str] = ""
+    #: Folded into ``extra_args`` as ``--referer <url>`` by the API; there is
+    #: no dedicated column for it.
+    referer: Optional[str] = ""
 
 
 class BulkJobCreate(BaseModel):
@@ -29,6 +32,7 @@ class BulkJobCreate(BaseModel):
     preset: str = "best"
     subfolder: Optional[str] = ""
     extra_args: Optional[str] = ""
+    referer: Optional[str] = ""
 
 
 class Job(BaseModel):
@@ -53,17 +57,28 @@ class Job(BaseModel):
 
 class ImportRequest(BaseModel):
     text: Optional[str] = ""
+    #: Page the pasted HTML came from; relative media links resolve against it.
+    base_url: Optional[str] = ""
 
 
 class ImportCandidate(BaseModel):
     url: str
     extractor: str
+    #: "site" (a dedicated yt-dlp extractor), "direct" (a media file URL) or
+    #: "generic" (anything else, handled by yt-dlp's GenericIE).
+    kind: str = "site"
+
+
+class ImportRejection(BaseModel):
+    url: str
+    reason: str
 
 
 class ImportResult(BaseModel):
     candidates: List[ImportCandidate] = Field(default_factory=list)
-    rejected: List[str] = Field(default_factory=list)
+    rejected: List[ImportRejection] = Field(default_factory=list)
     total_found: int = 0
+    allow_generic: bool = True
 
 
 class FolderCreate(BaseModel):
@@ -75,6 +90,36 @@ class StatusResponse(BaseModel):
     cookies_detected: bool
     max_concurrent: int
     downloads_root: str
+    allow_generic: bool = True
+
+
+# --------------------------------------------------------------------------
+# General settings
+# --------------------------------------------------------------------------
+
+
+class GeneralSettings(BaseModel):
+    """Non-proxy app settings, persisted next to the proxy pool."""
+
+    #: Offer (and accept) URLs no dedicated extractor claims, letting yt-dlp's
+    #: GenericIE try. Off = only known sites and direct media links.
+    allow_generic: bool = True
+    #: Sent as ``--referer`` on every job that does not carry its own.
+    default_referer: str = ""
+
+    @field_validator("default_referer")
+    @classmethod
+    def _clean_referer(cls, value: str) -> str:
+        raw = (value or "").strip()
+        if not raw:
+            return ""
+        if any(ch.isspace() for ch in raw):
+            raise ValueError("Referer must not contain whitespace")
+        if urlsplit(raw).scheme.lower() not in ("http", "https"):
+            raise ValueError("Referer must be http:// or https://")
+        if not urlsplit(raw).netloc:
+            raise ValueError("Referer needs a host")
+        return raw
 
 
 # --------------------------------------------------------------------------

@@ -20,7 +20,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Set
 
-from . import config, db, paths, proxies, ytdl
+from . import config, db, importer, paths, proxies, ytdl
 
 # --------------------------------------------------------------------------
 # Module state
@@ -374,6 +374,17 @@ def _run_flat_extract(job: Dict[str, Any]) -> Dict[str, Any]:
         proxy=entry.url if entry is not None else None,
     )
 
+    # Enumeration deliberately ignores the rest of the user's extra args, but a
+    # Referer is exactly what gates the page in the first place: without it a
+    # hotlink-protected site 403s here and every job falls back to a direct
+    # download, losing the playlist split.
+    try:
+        headers = ytdl.parse_extra_args(job.get("extra_args") or "").get("http_headers")
+    except Exception:
+        headers = None
+    if headers:
+        opts["http_headers"] = {**(opts.get("http_headers") or {}), **headers}
+
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(job["url"], download=False)
 
@@ -385,6 +396,7 @@ def _run_flat_extract(job: Dict[str, Any]) -> Dict[str, Any]:
         return {"info": info}
 
     entries: List[Dict[str, Any]] = []
+    seen_urls: set = set()
     for entry in raw_entries:
         if not isinstance(entry, dict):
             continue
@@ -395,6 +407,12 @@ def _run_flat_extract(job: Dict[str, Any]) -> Dict[str, Any]:
                 url = f"https://www.youtube.com/watch?v={vid}"
         if not url:
             continue
+        # Generic pages often list the same media file twice (<video src> plus
+        # <source src>); two children racing for one filename collide on the
+        # .part rename, so keep the first occurrence only.
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
         entries.append({"url": url, "title": entry.get("title")})
 
     return {"info": info, "entries": entries}
@@ -413,6 +431,12 @@ def _track(task: asyncio.Task) -> None:
 async def submit(job: Dict[str, Any]) -> None:
     """Queue a job. Playlist enumeration happens off the request path."""
     if job.get("type") == "child" or job.get("type") == "playlist":
+        _submit_download(job)
+        return
+    if importer.is_direct_media(job.get("url") or ""):
+        # A URL that plainly names a media file can never be a playlist, so
+        # the flat enumeration pass would only cost an extra round trip (and,
+        # on a slow CDN, a long one) before falling through to the download.
         _submit_download(job)
         return
     _track(asyncio.create_task(_dispatch_single(job)))

@@ -32,11 +32,51 @@ expose it directly to the internet.
 
 ## Supported sites
 
-Anything [yt-dlp itself supports](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md)
--- YouTube, Vimeo, SoundCloud, Twitter/X, and hundreds of others -- works
-out of the box.
+The Import tab (and the queue add bar) accepts three tiers of link, in order
+of preference:
 
-In addition, this app ships a first-class **imaglr.com** extractor:
+1. **Known extractor** -- anything
+   [yt-dlp itself supports](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md)
+   -- YouTube, Vimeo, SoundCloud, Twitter/X, and hundreds of others -- plus
+   this app's own [imaglr.com](#imaglr-support) extractor. Shown with the
+   extractor's name as a tag.
+2. **Direct media link** -- a URL that plainly points at a media file (`.mp4`,
+   `.m3u8`, `.webm`, `.mp3`, etc.) with no site-specific extractor needed.
+   Shown with a "direct media" tag. This is the common case for links copied
+   straight out of a page's dev tools/network tab -- pair it with the
+   **Referer** field (Import tab's "Page URL", the queue add bar's advanced
+   Referer field, or a site-wide default in Settings) when the host checks
+   where the request came from.
+3. **Generic page scraper** -- anything else is handed to yt-dlp's generic
+   extractor, which loads the page and looks for embedded/linked media.
+   Best-effort, shown with a "generic" tag. This tier can be turned off
+   entirely in **Settings -> General** ("Allow generic extraction") if you'd
+   rather unsupported links be rejected outright than silently attempted.
+
+Either way, yt-dlp itself refuses DRM-protected content and a short list of
+known piracy/rights-infringing sites -- those links are rejected at import
+time with the reason yt-dlp gave, shown in the Import tab's collapsible
+"N rejected" list rather than failing silently or as a queued job.
+
+### Referer
+
+Some sites (especially for direct media links) check the `Referer` header and
+reject requests that don't carry the page the link was found on. Three ways
+to set it:
+
+- **Settings -> General -> Default Referer** -- sent with every download
+  unless a job sets its own.
+- **Import tab -> Page URL** -- used both to resolve relative links found on
+  a pasted/uploaded page and sent as the Referer for everything queued from
+  that scan.
+- **Queue add bar -> advanced (⋯) -> Referer** -- for a single ad-hoc add.
+
+A job-level Referer always wins over the default.
+
+### imaglr.com support
+
+In addition to yt-dlp's own extractors, this app ships a first-class
+**imaglr.com** extractor:
 
 - Single posts, user profiles, community pages ("`/p/<slug>`"), and tags.
 - **Videos only** -- image posts are enumerated but skipped, since this app

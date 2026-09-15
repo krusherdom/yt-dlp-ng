@@ -227,3 +227,81 @@ database without the column.
 - XVideos from an Australian exit still returns no formats (site age gate); only a non-AU proxy exit resolves it, which the user's LAN proxies provide.
 - v0.3.1: Cloudflare default test URL, scheme dropdown in proxy add row, clearer HTTP-status errors. Prompted by the user's socks5 proxy showing down (bare host:port rejected; Google generate_204 rejects VPN exits).
 - v0.3.2: added curl_cffi via the `yt-dlp[curl-cffi]` extra in requirements.txt, entrypoint UPDATE_ON_START and the /api/update-ytdlp command; verified 38 impersonation targets inside the built image.
+
+## Generic fallback & media-link import (UI/docs)
+- Built against the backend contract (implemented concurrently by another agent, not yet mergeable to test live): `GET/PUT /api/settings/general` (`{allow_generic, default_referer}`), `GET /api/status` gaining `allow_generic`, `POST /api/import` gaining `base_url` (multipart) and returning `candidates[].kind` (`site|direct|generic`) plus `rejected[].reason` and a top-level `allow_generic`, and `POST /api/jobs` / `/api/jobs/bulk` gaining an optional `referer` string. Verified by `node --check static/app.js` and careful reading only -- could not run the backend end-to-end since `app/` is owned by the other in-flight agent.
+- `static/index.html`:
+  - New Settings -> General card (above Cookies): "Allow generic extraction" checkbox, "Default Referer" text field with help copy, Save button.
+  - Import tab intro copy rewritten to the catch-all framing ("Paste links, or drop a saved HTML page. Known sites, direct media files (mp4/m3u8/...) and unknown pages are all picked up."); added a "Page URL (for relative links / Referer)" input (`#import-base-url`).
+  - Import results card gained: three filter checkboxes (`#filter-site`/`#filter-direct`/`#filter-generic`, all checked by default) above the candidate list; a `<details>` "N rejected" collapsible (`#rejected-box`/`#rejected-summary`/`#rejected-list`) listing url + reason; a `#generic-hint` hint box (hidden by default) linking to Settings.
+  - Queue add bar's collapsible "extra args" area gained a Referer input (`#queue-referer`).
+  - `tpl-candidate` template gained a `.cand-kind` tag (replacing the old `.cand-extractor`, now also used for "direct media"/"generic" labels) and a hidden `.cand-note` span for the generic-tier caveat; new `tpl-rejected-row` template (`.rej-url` mono + `.rej-reason` muted).
+- `static/app.js`:
+  - `state.candidates[].kind`, `state.rejected` (`[{url,reason}]`), `state.candFilters` (`{site,direct,generic}`, all `true` by default) added.
+  - `scanImport()` now sends `base_url` (from `#import-base-url`) as a form field when set, and drives the new rejected/kind-filter/hint rendering from the response.
+  - `renderCandidates()` reads `c.kind` (`candKind()` defaults anything unrecognised to `site` so an older/mismatched backend response degrades gracefully) and paints the tag/note per tier; `applyCandFilters()` hides rows whose kind is unchecked; `onCandFilterChange()` unchecking a filter also unchecks (deselects) and hides its rows, per spec ("unticks those rows"); re-checking only re-shows them. `selectedUrls()` now reads from visible `.candidate` rows' checkboxes rather than all checkboxes in the list, so a hidden/filtered-out row can never be silently queued.
+  - `renderRejected()` renders the collapsible list; `updateGenericHint()` shows the Settings-linking hint only when `allow_generic === false` and at least one rejected reason contains "generic extraction disabled" (case-insensitive substring match, so exact backend wording isn't load-bearing); the hint button calls `showTab('settings')`.
+  - `addSelected()` and `addJob()` both send `referer` (trimmed, only when non-empty) -- from `#import-base-url` for the bulk import add, from `#queue-referer` for the queue add bar (single or multi-URL paste, matching the existing preset/subfolder/extra_args pattern).
+  - `loadGeneralSettings()` / `saveGeneralSettings()` added (GET/PUT `/api/settings/general`, toast on result); wired to `showTab('settings')` (alongside the existing `loadStatus()`/`loadProxies()` refresh) and to `init()` so the checkbox/field are populated before the user ever opens the Settings tab.
+  - `resetImport()` now also clears `state.rejected`/`state.candFilters`, the base-url field, the rejected box (including collapsing it), the generic hint, and re-checks all three filter checkboxes.
+- `static/style.css`: `.cand-filters` (filter checkbox row), `.tag-direct`/`.tag-generic` (colour-only tag variants, reusing `.tag`'s existing shape), `.rejected-box`/`.rejected-list`/`.rejected-row`/`.rej-url`/`.rej-reason` (collapsible list, styled like the existing `.proxy-advanced` `<details>`), `.hint-box` (amber `--warn`-toned inline hint, no side accent border). `.candidate[hidden] { display: none; }` added since `<label>` is not display:none by default when the `hidden` attribute is set in all browsers this app targets consistently via CSS rather than relying on the attribute alone (matches the `[hidden]` convention already used elsewhere, e.g. `#proxy-domains-wrap[hidden]`). No width/height transitions or side accent borders introduced, consistent with the existing design-hook constraints.
+- README: added a "Supported sites" rewrite explaining the three tiers (known extractor / direct media link / generic page scraper), that generic can be disabled in Settings, the three places to set a Referer and that a job-level Referer wins over the default, and that yt-dlp itself refuses DRM/piracy sites with the reason surfaced in the rejected list at import time; moved the existing imaglr copy under its own "imaglr.com support" subheading.
+- `changelog.md` bumped to v0.4.0 (Added: generic extraction toggle, direct/generic import tiers with kind badges and filters, Referer support in three places, rejected-reason list).
+- Not touched (owned by the concurrently-running backend agent): `app/`, `tests/`. Not touched per the brief: `unraid/yt-dlp-ng.xml` (no new env var was needed -- both new settings are runtime-configurable from the UI, not container-level config).
+- Assumptions, to be re-verified once the backend lands: candidate `kind` values are exactly `"site"`/`"direct"`/`"generic"` (anything else falls back to `site` display so an unrecognised value fails safe rather than disappearing); rejected reasons signalling generic-disabled contain the literal substring "generic extraction disabled"; `POST /api/import`'s `allow_generic` field name matches `GET/PUT /api/settings/general`'s.
+
+## Generic fallback & media-link import (backend)
+
+Backend half of the v0.4.0 "catch-all" work. Frontend/static, README, unraid and `changelog.md` were handled concurrently by another agent; this entry covers `app/` and `tests/` only.
+
+### Settings file format (`app/settings.py`, `app/models.py`)
+- `/config/settings.json` is now an envelope: `{"proxies": {...ProxySettings...}, "general": {...GeneralSettings...}}`, written atomically as before.
+- Backward compatible on load. `_split_sections()` tells the shapes apart by type: the v0.4.0 envelope's `proxies` key is a **dict**, a legacy bare `ProxySettings` dump's `proxies` key is a **list**. The older `{"proxy": {...}}` envelope is still honoured. Nothing is rewritten eagerly on load (`load()` still never raises); the next save writes the new shape.
+- The two sections are validated independently, so a malformed `general` block can no longer cost the user their configured proxies (and vice versa).
+- New `GeneralSettings(BaseModel)`: `allow_generic: bool = True`, `default_referer: str = ""` (validator: empty, or an http(s) URL with a host and no whitespace).
+- New API: `settings.get_general()`, `await settings.save_general(g)`, `settings.public_general()`. `reset_cache()` clears both caches. `save_general()` deliberately does **not** call `_reset_statuses()` -- nothing about these options invalidates a proxy health verdict. Both writers hold `_lock` and read the *other* section from cache, so neither can clobber the other.
+- Existing `ProxySettings` API (`get`, `save`, `load`, `public_settings`, masking) is unchanged for callers.
+
+### Importer classification (`app/importer.py`)
+- `validate_urls(urls, allow_generic=None)` now returns `(candidates, rejected)` where candidates are `{"url", "extractor", "kind"}` and rejections are `{"url", "reason"}`. `allow_generic=None` reads the persisted setting (lazy `from . import settings` import to keep `settings` importable on its own).
+- `kind` is decided in this order: unsupported extractor -> rejected; any other dedicated extractor -> `"site"`; media extension on the URL *path* (query ignored) -> `"direct"` (extractor `"direct"`); otherwise -> `"generic"` (extractor `"generic"`) when `allow_generic`, else rejected. Putting the unsupported check first means `https://gofile.io/d/x.mp4` is rejected rather than offered as a direct file.
+- `MEDIA_EXTENSIONS`: mp4 webm mkv mov m4v avi flv ts mp3 m4a aac ogg opus flac wav m3u8 mpd. New public `is_direct_media(url)` helper (`PurePosixPath(urlsplit(url).path).suffix`), also used by the worker.
+- Sites yt-dlp refuses outright are rejected with a reason instead of being queued as jobs that can only fail. Detected via `issubclass(ie, yt_dlp.extractor.unsupported.UnsupportedInfoExtractor)` (import guarded; falls back to matching `IE_NAME` in DRM/Piracy/Liability). Reason constants: `REASON_DRM` = "unsupported by yt-dlp (DRM)", `REASON_PIRACY` = "unsupported by yt-dlp (piracy)", `REASON_LIABILITY` = "unsupported by yt-dlp (liability)", `REASON_UNSUPPORTED` = "unsupported by yt-dlp" (fallback for a future member of the family), `REASON_NO_GENERIC` = "generic extraction disabled", `REASON_NOT_URL` = "not a URL".
+- `match_extractor(url)` is unchanged; the classification path uses a new `match_extractor_class(url)` so the class (not just its name) is available. `_extractors()` still excludes GenericIE -- generic is a fallthrough, never a match.
+- `extract_urls(payload, base_url=None)` harvests far more: `href`/`src`/`data-src`/`data-url` on `a area link iframe embed source video audio track`, plus `<meta property|name="og:video"|"og:video:url"|"og:video:secure_url"|"twitter:player:stream" content=...>`. `handle_startendtag` delegates to `handle_starttag` so a self-closing `<source />` is covered. `<link rel=...>` values that are page furniture (stylesheet, icon, manifest, preconnect, preload, canonical, ...) are skipped.
+- Relative URLs resolve against `base_url` via `urljoin`; without a base they are dropped (unchanged behaviour for callers that pass nothing). Fragments (`#top`) and `javascript:`/`mailto:`/`data:`/`about:`/`tel:`/`blob:`/other schemes are filtered before the join, so `urljoin(base, "#top")` can no longer smuggle the page itself in as a candidate.
+- The bare-URL regex pass over HTML now runs over the parser's **text nodes** (script bodies included -- that is where player configs hide their `.m3u8`) rather than the raw markup. Without this, skipping a stylesheet `href` was pointless: the regex found it again in the source text. Falls back to scanning the whole payload if the parser raised.
+- `looks_like_html()` extended with `src=`, `<video`, `<audio`, `<source`, `<iframe`, `<embed`, `<meta` -- otherwise a pasted player fragment took the plain-text path and its relative `src` was never resolved.
+- `import_payload(payload, base_url=None, allow_generic=None)` returns `{"candidates", "rejected", "total_found", "allow_generic"}`.
+
+### Referer (`app/main.py`, `app/models.py`)
+- `JobCreate`/`BulkJobCreate` gained `referer: Optional[str] = ""`. **No schema change**: `_with_referer()` folds it into `extra_args` as `--referer <shlex.quote(url)>`, which `ytdl.parse_extra_args` already maps onto `http_headers.Referer` (verified). The option string is the whole storage mechanism, so retry/resume carry it for free.
+- Precedence: an explicit `--referer` in the user's own `extra_args` wins (detected by `shlex.split`, matching both `--referer x` and `--referer=x`, never duplicated); then the request's `referer` field; then `general.default_referer`. A non-http(s) referer is a 400.
+- Order of operations: `_validate_extra_args()` runs on the user's text first so a 400 points at what they typed, then the referer is appended.
+
+### Worker (`app/worker.py`)
+- `submit()` skips the flat enumeration pass when `importer.is_direct_media(job["url"])`. A URL that plainly names a media file can never be a playlist, so the enumeration round trip was pure latency before falling through to the download anyway. Children and playlist parents are unaffected (they never enumerated).
+- `_run_flat_extract()` now carries the job's `http_headers` (i.e. the Referer) into the enumeration pass. It still ignores the rest of the user's extra args, but a Referer is exactly what gates the page: without it a hotlink-protected site 403s during enumeration, logs "enumeration failed, downloading directly" and loses the playlist split. Parsing failures are swallowed -- enumeration must never die over an option string the download path will re-validate anyway.
+
+### Endpoints
+- `GET /api/settings/general` -> `public_general()`.
+- `PUT /api/settings/general` -> validate, save, broadcast a status snapshot (because `allow_generic` is now in `status_payload()`), return the saved object.
+- `status_payload()` gained `"allow_generic": bool` -- so `GET /api/status` and the WS `status`/`snapshot` frames carry it.
+- `POST /api/import` accepts an optional `base_url` form field (also read from a JSON body's `base_url`), validated as http(s) or 400.
+
+### Tests
+- New `tests/test_general.py`: settings migration from the legacy bare-`ProxySettings` file and from the new envelope, independent section validation, `save`/`save_general` not clobbering each other, `GeneralSettings` validation, GET/PUT `/api/settings/general` round trip, `allow_generic` in `/api/status`, site/direct/generic classification, every media extension, query-string extensions *not* counting, piracy (`dood.to`) and DRM (`crunchyroll.com`) rejection with reasons, piracy beating a `.mp4` suffix, `allow_generic=false`, `<video src>`/`<source src>`/`og:video`/`twitter:player:stream` harvesting with and without `base_url`, stylesheet/`#fragment`/`javascript:` filtering, dedupe across attribute and text sources, `/api/import` with `base_url`, referer folding + quoting + precedence + bulk, and the direct-media enumeration skip (monkeypatched `_submit_download`/`_dispatch_single`).
+- `tests/test_importer.py`: updated for the `{"url","reason"}` rejection shape; the three "known sites only" assertions now pass `allow_generic=False` explicitly so they are deterministic regardless of the settings cache.
+- `tests/test_imaglr.py`: same rejection-shape update, plus a new assertion that imaglr URLs classify as `kind: "site"`.
+- `tests/test_proxies.py`: two on-disk assertions updated for the settings envelope (`on_disk["proxies"]["proxies"][0]`).
+- Suite: 244 passed (was 187).
+
+### Not done, deliberately
+- `FastAPI(version="0.3.2")` in `app/main.py` was **not** bumped -- version and `changelog.md` belong to the other agent this round. It should become `0.4.0`.
+
+## v0.4.0 integration & verification (2026-09-15)
+- Verified in Docker: import classifies youtube (site), example.com (generic), an mp4 link (direct) and rejects sxyprn with "unsupported by yt-dlp (piracy)"; direct mp4 with Referer downloads; a page with `<video>` tags downloads via the generic extractor; toggling allow_generic off rejects generic pages with the reason.
+- Fixed: generic pages list the same media twice (video + source tags) which created two children racing on one filename; playlist entries are now deduplicated by URL.
+- Fixed: the download archive was one global file, so re-adding a playlist into a different folder silently skipped everything; it is now keyed per destination folder under /config/archives/.
+- Fixed: `.hint-box` used display:flex which overrode the hidden attribute, so the "generic extraction is turned off" hint showed whenever any URL was rejected.
+- Static assets now carry a version query string so browsers pick up new CSS/JS after an update.

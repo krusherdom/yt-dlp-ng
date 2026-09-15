@@ -1,12 +1,20 @@
-"""Persisted app settings (currently: the proxy pool).
+"""Persisted app settings: the proxy pool plus the general options.
 
 One small JSON document in ``config.SETTINGS_FILE``, written atomically
 (tmp file + :func:`os.replace`) under an asyncio lock and cached in module
 state so that the synchronous worker threads can read it without touching the
 event loop.
 
-``load()`` is awaited once at startup; :func:`get` is the hot path and never
-does I/O.
+On-disk shape (since v0.4.0)::
+
+    {"proxies": {...ProxySettings...}, "general": {...GeneralSettings...}}
+
+Older files are a bare ``ProxySettings`` dump (whose own ``proxies`` key is a
+*list*) or a ``{"proxy": {...}}`` envelope; both are migrated on load and
+rewritten in the new shape by the next save.
+
+``load()`` is awaited once at startup; :func:`get` / :func:`get_general` are
+the hot paths and never do I/O.
 """
 
 from __future__ import annotations
@@ -16,15 +24,16 @@ import json
 import logging
 import os
 import tempfile
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlsplit
 
 from . import config
-from .models import ProxySettings
+from .models import GeneralSettings, ProxySettings
 
 log = logging.getLogger("ytdlpweb.settings")
 
 _cached: Optional[ProxySettings] = None
+_cached_general: Optional[GeneralSettings] = None
 _lock = asyncio.Lock()
 
 
@@ -88,41 +97,66 @@ def public_settings() -> dict:
 # --------------------------------------------------------------------------
 
 
-def _read_file() -> ProxySettings:
+def _split_sections(data: Dict[str, Any]) -> Tuple[Any, Any]:
+    """Pick the proxy and general payloads out of any known file shape.
+
+    A bare ``ProxySettings`` dump also has a ``proxies`` key, but it holds a
+    *list*; the v0.4.0 envelope holds a *dict*. That difference is what tells
+    the two apart.
+    """
+    if isinstance(data.get("proxies"), dict):  # v0.4.0 envelope
+        return data.get("proxies"), data.get("general")
+    if isinstance(data.get("proxy"), dict):  # legacy {"proxy": {...}} envelope
+        return data.get("proxy"), data.get("general")
+    return data, data.get("general")  # legacy bare ProxySettings dump
+
+
+def _read_file() -> Tuple[ProxySettings, GeneralSettings]:
     path = config.SETTINGS_FILE
     try:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return ProxySettings()
+        return ProxySettings(), GeneralSettings()
     except OSError as exc:
         log.warning("settings: could not read %s (%s); using defaults", path, exc)
-        return ProxySettings()
+        return ProxySettings(), GeneralSettings()
 
     try:
         data = json.loads(raw)
     except ValueError as exc:
         log.warning("settings: %s is not valid JSON (%s); using defaults", path, exc)
-        return ProxySettings()
+        return ProxySettings(), GeneralSettings()
 
     if not isinstance(data, dict):
         log.warning("settings: %s is not a JSON object; using defaults", path)
-        return ProxySettings()
+        return ProxySettings(), GeneralSettings()
 
-    # Tolerate both {"proxy": {...}} envelopes and a bare ProxySettings dump.
-    payload = data.get("proxy") if isinstance(data.get("proxy"), dict) else data
+    proxy_payload, general_payload = _split_sections(data)
+
+    # The two sections are validated independently: a malformed "general"
+    # block must never cost the user their configured proxies.
     try:
-        return ProxySettings(**payload)
+        proxy_settings = ProxySettings(**(proxy_payload or {}))
     except Exception as exc:
-        log.warning("settings: %s failed validation (%s); using defaults", path, exc)
-        return ProxySettings()
+        log.warning("settings: %s proxies failed validation (%s); using defaults", path, exc)
+        proxy_settings = ProxySettings()
+
+    try:
+        general = GeneralSettings(**(general_payload or {}))
+    except Exception as exc:
+        log.warning("settings: %s general failed validation (%s); using defaults", path, exc)
+        general = GeneralSettings()
+
+    return proxy_settings, general
 
 
 async def load() -> ProxySettings:
     """Read the settings file into the cache. Never raises."""
-    global _cached
+    global _cached, _cached_general
     async with _lock:
-        settings = _read_file()
+        settings, general = _read_file()
         _cached = settings
+        _cached_general = general
     _reset_statuses(settings)
     return settings
 
@@ -134,6 +168,16 @@ def get() -> ProxySettings:
     that races startup) so no caller ever has to handle ``None``.
     """
     return _cached if _cached is not None else ProxySettings()
+
+
+def get_general() -> GeneralSettings:
+    """The cached general settings; defaults before :func:`load` has run."""
+    return _cached_general if _cached_general is not None else GeneralSettings()
+
+
+def public_general() -> dict:
+    """The general settings as the API returns them (nothing is secret)."""
+    return get_general().model_dump()
 
 
 def _unmask(settings: ProxySettings) -> ProxySettings:
@@ -183,19 +227,42 @@ def _reset_statuses(settings: ProxySettings) -> None:
     proxies.reset_statuses_for(settings)
 
 
+def _envelope(proxy_settings: ProxySettings, general: GeneralSettings) -> str:
+    return json.dumps(
+        {"proxies": proxy_settings.model_dump(), "general": general.model_dump()},
+        indent=2,
+        sort_keys=True,
+    )
+
+
 async def save(settings: ProxySettings) -> ProxySettings:
-    """Persist ``settings`` atomically and update the cache."""
+    """Persist the proxy section atomically and update the cache."""
     global _cached
     settings = _unmask(settings)
-    payload = json.dumps(settings.model_dump(), indent=2, sort_keys=True)
     async with _lock:
+        payload = _envelope(settings, get_general())
         _atomic_write(config.SETTINGS_FILE, payload)
         _cached = settings
     _reset_statuses(settings)
     return settings
 
 
+async def save_general(general: GeneralSettings) -> GeneralSettings:
+    """Persist the general section atomically and update the cache.
+
+    Deliberately does *not* touch the proxy health table: nothing about these
+    options invalidates a live/dead verdict.
+    """
+    global _cached_general
+    async with _lock:
+        payload = _envelope(get(), general)
+        _atomic_write(config.SETTINGS_FILE, payload)
+        _cached_general = general
+    return general
+
+
 def reset_cache() -> None:
     """Drop the cache (tests)."""
-    global _cached
+    global _cached, _cached_general
     _cached = None
+    _cached_general = None

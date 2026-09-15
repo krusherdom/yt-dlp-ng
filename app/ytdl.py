@@ -156,6 +156,27 @@ def _reroot_outtmpl(user_tmpl: Any, target_dir: Path) -> Optional[Dict[str, str]
     return safe or None
 
 
+def archive_path_for(target_dir: Path) -> Path:
+    """Per-destination download archive.
+
+    Playlist children use an archive so re-adding a playlist skips items that
+    are already fetched. Keying it by destination folder (rather than one
+    global file) means the same playlist added into a *different* folder is
+    downloaded again instead of silently reporting "done" with no files.
+    """
+    import hashlib
+
+    try:
+        rel = Path(target_dir).resolve().relative_to(config.DOWNLOADS_ROOT.resolve())
+        key = rel.as_posix() or "."
+    except (ValueError, OSError):
+        key = str(target_dir)
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
+    folder = config.CONFIG_DIR / "archives"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / f"{digest}.txt"
+
+
 def build_opts(
     *,
     preset: str = DEFAULT_PRESET,
@@ -191,7 +212,7 @@ def build_opts(
     )
 
     if use_archive:
-        opts["download_archive"] = str(config.ARCHIVE_FILE)
+        opts["download_archive"] = str(archive_path_for(target_dir))
 
     if config.COOKIES_FILE.is_file():
         opts["cookiefile"] = str(config.COOKIES_FILE)
