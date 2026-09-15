@@ -64,7 +64,7 @@ async def lifespan(app: FastAPI):
         await db.close_db()
 
 
-app = FastAPI(title="yt-dlp-ng", version="0.3.1", lifespan=lifespan)
+app = FastAPI(title="yt-dlp-ng", version="0.3.2", lifespan=lifespan)
 
 
 # --------------------------------------------------------------------------
@@ -362,7 +362,7 @@ def _installed_version() -> str:
 def _do_update() -> Dict[str, Any]:
     old = ytdl.ytdlp_version()
     proc = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-U", "yt-dlp"],
+        [sys.executable, "-m", "pip", "install", "-U", "yt-dlp[curl-cffi]"],
         capture_output=True,
         text=True,
         timeout=600,

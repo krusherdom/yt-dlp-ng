@@ -52,7 +52,7 @@ fi
 
 if [ "$UPDATE_ON_START" = "true" ]; then
     echo "[entrypoint] UPDATE_ON_START=true, updating yt-dlp..."
-    gosu "$PUID:$PGID" "$VENV/bin/pip" install --no-cache-dir -U yt-dlp || \
+    gosu "$PUID:$PGID" "$VENV/bin/pip" install --no-cache-dir -U "yt-dlp[curl-cffi]" || \
         echo "[entrypoint] WARNING: yt-dlp update failed, continuing with existing version"
 fi
 

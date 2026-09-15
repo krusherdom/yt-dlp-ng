@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.2 - 2026-09-15
+### Fixed
+- Browser impersonation now works: the image installs `yt-dlp[curl-cffi]`, removing the "attempting impersonation, but no impersonate target is available" warning on sites that fingerprint TLS. The in-app updater and `UPDATE_ON_START` keep the extra installed.
+
 ## v0.3.1 - 2026-09-15
 ### Changed
 - Default proxy test URL is now `https://www.cloudflare.com/cdn-cgi/trace`; Google's `generate_204` rejects many VPN exit IPs, which made working proxies show as down.
