@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.1 - 2026-09-15
+### Changed
+- Default proxy test URL is now `https://www.cloudflare.com/cdn-cgi/trace`; Google's `generate_204` rejects many VPN exit IPs, which made working proxies show as down.
+- Proxy add row has a scheme dropdown (defaults to `socks5h://`) so a bare `host:port` is no longer rejected.
+- Health-check errors for HTTP 4xx/5xx now explain that the test site rejected the proxy and suggest changing the Test URL.
+
 ## v0.3.0 - 2026-09-15
 
 ### Added

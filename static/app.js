@@ -1116,8 +1116,16 @@ window.__YTDLP_APP_LOADED = true;
     }
   }
 
+  // Combine the scheme dropdown with the host:port field. A full URL typed
+  // into the field (with ://) wins over the dropdown.
+  function composeNewProxyUrl() {
+    const raw = els.proxyNewUrl.value.trim();
+    if (!raw || raw.includes('://')) return raw;
+    return els.proxyNewScheme.value + '://' + raw;
+  }
+
   async function testNewProxyField() {
-    const url = els.proxyNewUrl.value.trim();
+    const url = composeNewProxyUrl();
     if (!url) { toast('Enter a proxy URL first', 'error'); els.proxyNewUrl.focus(); return; }
     els.proxyNewTest.disabled = true;
     setText(els.proxyNewResult, 'Testing…');
@@ -1136,7 +1144,7 @@ window.__YTDLP_APP_LOADED = true;
   }
 
   function addProxyRow() {
-    const url = els.proxyNewUrl.value.trim();
+    const url = composeNewProxyUrl();
     if (!url) { toast('Enter a proxy URL first', 'error'); els.proxyNewUrl.focus(); return; }
     proxySettings.proxies.push({
       id: uuidish(),
@@ -1365,6 +1373,7 @@ window.__YTDLP_APP_LOADED = true;
     els.proxyTable         = $('#proxy-table');
     els.proxyEmpty         = $('#proxy-empty');
     els.proxyNewUrl        = $('#proxy-new-url');
+    els.proxyNewScheme     = $('#proxy-new-scheme');
     els.proxyNewLabel      = $('#proxy-new-label');
     els.proxyNewTest       = $('#proxy-new-test');
     els.proxyNewAdd        = $('#proxy-new-add');

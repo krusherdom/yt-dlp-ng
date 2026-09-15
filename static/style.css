@@ -585,3 +585,5 @@ input[type="file"] { color: var(--muted); font-size: 12.5px; width: 100%; }
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+.proxy-scheme-select { flex: 0 0 auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }

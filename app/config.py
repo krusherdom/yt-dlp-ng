@@ -56,7 +56,7 @@ SETTINGS_FILE: Path = CONFIG_DIR / "settings.json"
 # Default URL fetched through a proxy to decide whether it is alive. A 204
 # endpoint keeps the check cheap; override for air-gapped/LAN-only setups.
 PROXY_TEST_URL: str = (
-    os.environ.get("PROXY_TEST_URL") or "https://www.google.com/generate_204"
+    os.environ.get("PROXY_TEST_URL") or "https://www.cloudflare.com/cdn-cgi/trace"
 ).strip()
 
 # Repo root -> static/ lives next to app/. Resolved from __file__, never cwd.

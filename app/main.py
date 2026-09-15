@@ -64,7 +64,7 @@ async def lifespan(app: FastAPI):
         await db.close_db()
 
 
-app = FastAPI(title="yt-dlp Web", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="yt-dlp-ng", version="0.3.1", lifespan=lifespan)
 
 
 # --------------------------------------------------------------------------

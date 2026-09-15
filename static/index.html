@@ -199,8 +199,15 @@
 
       <label class="field-label" for="proxy-new-url">Add a proxy</label>
       <div class="addbar-row">
+        <select id="proxy-new-scheme" class="proxy-scheme-select" aria-label="Proxy type">
+          <option value="http">http://</option>
+          <option value="https">https://</option>
+          <option value="socks5h" selected>socks5h://</option>
+          <option value="socks5">socks5://</option>
+          <option value="socks4">socks4://</option>
+        </select>
         <input type="text" id="proxy-new-url" class="grow mono" autocomplete="off" spellcheck="false"
-               placeholder="http://user:pass@10.0.0.5:8888 or socks5://10.0.0.5:1080">
+               placeholder="10.0.0.5:1080 or user:pass@10.0.0.5:8888">
         <input type="text" id="proxy-new-label" class="proxy-label-input" autocomplete="off"
                placeholder="Label (optional)">
         <button type="button" class="btn btn-ghost" id="proxy-new-test">Test</button>

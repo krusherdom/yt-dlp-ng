@@ -257,7 +257,7 @@ def check_sync(
         status.latency_ms = int((time.perf_counter() - started) * 1000)
         status.live = code < 400
         if not status.live:
-            status.last_error = f"HTTP {code}"
+            status.last_error = f"HTTP {code} from test URL (the proxy works but the test site rejected it; try another Test URL under Advanced)"
     except Exception as exc:
         status.latency_ms = int((time.perf_counter() - started) * 1000)
         status.live = False

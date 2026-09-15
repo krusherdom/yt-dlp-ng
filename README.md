@@ -116,7 +116,7 @@ Create a new container manually with:
 | `PGID`            | `100`        | Group ID the app runs as.                                                   |
 | `UMASK`           | `022`        | Umask applied to newly created files/folders.                               |
 | `IMAGLR_MAX_PAGES`| `500`        | Safety cap on pages enumerated per imaglr profile/page/tag/RSS listing.     |
-| `PROXY_TEST_URL`  | `https://www.google.com/generate_204` | Default health-check URL for the proxy pool (Settings -> Proxies). Override for air-gapped/LAN-only setups; per-proxy overrides live in Settings, not the environment. |
+| `PROXY_TEST_URL`  | `https://www.cloudflare.com/cdn-cgi/trace` | Default health-check URL for the proxy pool (Settings -> Proxies). Override for air-gapped/LAN-only setups; per-proxy overrides live in Settings, not the environment. |
 
 ## Volumes
 
@@ -174,7 +174,7 @@ exactly this:
 - **Health checks** run automatically -- on startup, whenever you save the
   proxy settings, on a timer (default every 5 minutes, configurable), and on
   demand with **Re-check all**. A proxy fetches the configured health-check
-  URL (`https://www.google.com/generate_204` by default, or `PROXY_TEST_URL`)
+  URL (`https://www.cloudflare.com/cdn-cgi/trace` by default, or `PROXY_TEST_URL`)
   through itself; only proxies that answer within the timeout are considered
   live. The table shows each proxy's status dot, latency, and (best-effort)
   exit IP, with the last error available on hover.
